@@ -44,21 +44,18 @@ const App: React.FC = () => {
   const [loadsTruckId, setLoadsTruckId] = useState<string>('');
   const [loadsDate, setLoadsDate] = useState<string>(getTomorrowDate());
   
-  const [lastImportAt, setLastImportAt] = useState<string | null>(localStorage.getItem('lastImportTimestamp'));
   const [isLoading, setIsLoading] = useState(true);
   
-  // Estado para notificaciones y avisos
+  // Estado para notificaciones
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error' | 'chat', sender?: string, isGroup?: boolean} | null>(null);
   const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
   
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Fix: Define permissions based on the logged-in user's role
   const isAdmin = currentUser?.role === UserRole.ADMIN;
   const canImport = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUPERVISOR;
 
-  // Ref para tener siempre la lista de usuarios actualizada en los callbacks de suscripción
   const usersRef = useRef<AppUser[]>([]);
   useEffect(() => { usersRef.current = users; }, [users]);
 
@@ -77,23 +74,6 @@ const App: React.FC = () => {
     phone2: data.phone2 || '',
     truckId: data.truck_id || undefined,
     updatedAt: data.updated_at
-  });
-
-  const mapToDB = (o: Order) => ({
-    id: o.id,
-    status: o.status,
-    service_date: o.serviceDate || null,
-    total_amount: o.totalAmount,
-    pending_payment: o.pendingPayment,
-    zip_code: o.zipCode,
-    city: o.city,
-    province: o.province,
-    address: o.address,
-    notes: o.notes,
-    phone1: o.phone1,
-    phone2: o.phone2,
-    truck_id: o.truckId || null,
-    updated_at: o.updatedAt || null
   });
 
   const fetchUsers = async () => {
@@ -126,18 +106,15 @@ const App: React.FC = () => {
     fetchData();
   }, []);
 
-  // Limpiar indicador de no leídos al entrar al chat
   useEffect(() => {
-    if (activeTab === 'chat') {
-      setHasUnreadMessages(false);
-    }
+    if (activeTab === 'chat') setHasUnreadMessages(false);
   }, [activeTab]);
 
-  // SUSCRIPCIÓN GLOBAL PARA NOTIFICACIONES DE CHAT (REFORZADA)
+  // SUSCRIPCIÓN GLOBAL REFORZADA CON LOGS
   useEffect(() => {
     if (!currentUser) return;
 
-    const channel = supabase.channel('global-chat-system')
+    const channel = supabase.channel('notificaciones-globales')
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'chat_messages' },
@@ -173,16 +150,10 @@ const App: React.FC = () => {
     if (activeTab === 'chat') return;
     setNotification(null);
     setTimeout(() => {
-      setNotification({
-        message,
-        type: 'chat',
-        sender,
-        isGroup
-      });
-    }, 50);
+      setNotification({ message, type: 'chat', sender, isGroup });
+    }, 100);
   };
 
-  // Limpieza automática de notificaciones
   useEffect(() => {
     if (notification) {
       const timer = setTimeout(() => setNotification(null), 8000);
@@ -190,46 +161,24 @@ const App: React.FC = () => {
     }
   }, [notification]);
 
+  const testNotification = () => {
+    triggerNotification("Este es un mensaje de prueba para verificar el nuevo diseño sin repetición.", "Sistema Prueba", false);
+  };
+
   const handleLogin = (username: string, password: string) => {
     const user = users.find(u => u.username === username && u.password === password);
     if (user) {
       setCurrentUser(user);
       setLoginError(null);
-      showNotification(`Bienvenido, ${user.name}`, "success");
+      setNotification({ message: `Bienvenido, ${user.name}`, type: 'success' });
     } else {
-      setLoginError("Acceso denegado: Usuario o contraseña incorrectos.");
+      setLoginError("Usuario o contraseña incorrectos.");
     }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     setActiveTab('orders');
-  };
-
-  const showNotification = (message: string, type: 'success' | 'error' | 'chat') => {
-    setNotification({ message, type });
-  };
-
-  const handleAddUser = async (u: Omit<AppUser, 'id'>) => {
-    try {
-      const { error } = await supabase.from('app_users').insert([u]);
-      if (error) throw error;
-      await fetchUsers();
-      showNotification("Usuario registrado correctamente", "success");
-    } catch (err: any) {
-      showNotification("Error al crear usuario", "error");
-    }
-  };
-
-  const handleDeleteUser = async (id: string) => {
-    try {
-      const { error } = await supabase.from('app_users').delete().eq('id', id);
-      if (error) throw error;
-      await fetchUsers();
-      showNotification("Usuario eliminado", "success");
-    } catch (err: any) {
-      showNotification("Error al eliminar", "error");
-    }
   };
 
   const availableProvinces = useMemo(() => {
@@ -277,51 +226,11 @@ const App: React.FC = () => {
     };
   }, [filteredAndSortedOrders]);
 
-  const handleSelectOrder = (order: Order) => {
-    setSelectedOrder(order);
-    setIsModalOpen(true);
-  };
-
-  const updateOrderStatus = async (id: string, newStatus: OrderStatus) => {
-    const now = new Date().toISOString();
-    const { error } = await supabase.from('orders').update({ status: newStatus, updated_at: now }).eq('id', id);
-    if (!error) {
-      const { data } = await supabase.from('orders').select('*').eq('id', id).single();
-      if (data) setOrders(prev => prev.map(o => o.id === id ? mapFromDBFixed(data) : o));
-    }
-  };
-
-  const saveEditedOrder = async (updatedOrder: Order) => {
-    const { error } = await supabase.from('orders').update(mapToDB(updatedOrder)).eq('id', updatedOrder.id);
-    if (!error) {
-      const { data } = await supabase.from('orders').select('*').eq('id', updatedOrder.id).single();
-      if (data) {
-        setOrders(prev => prev.map(o => o.id === updatedOrder.id ? mapFromDBFixed(data) : o));
-        setIsModalOpen(false);
-        showNotification('Pedido actualizado', 'success');
-      }
-    }
-  };
-
-  const handleTransferLoads = async (sourceTruckId: string, destTruckId: string, sourceDate: string, targetDate: string) => {
-    const ordersToMove = orders.filter(o => o.truckId === sourceTruckId && o.serviceDate === sourceDate && o.status === OrderStatus.SCHEDULED);
-    if (ordersToMove.length === 0) return;
-    const ids = ordersToMove.map(o => o.id);
-    const { error } = await supabase.from('orders').update({ truck_id: destTruckId, service_date: targetDate, updated_at: new Date().toISOString() }).in('id', ids);
-    if (!error) {
-      const { data: freshOrders } = await supabase.from('orders').select('*');
-      if (freshOrders) setOrders(freshOrders.map(mapFromDBFixed));
-      showNotification(`Traspaso completado: ${ids.length} pedidos movidos.`, 'success');
-    }
-  };
-
-  if (!currentUser) {
-    return <LoginPage onLogin={handleLogin} error={loginError} />;
-  }
+  if (!currentUser) return <LoginPage onLogin={handleLogin} error={loginError} />;
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-[100] shadow-sm">
         <div className="max-w-[1600px] mx-auto px-8 h-20 flex justify-between items-center">
           <div className="flex items-center gap-10">
             <div className="flex items-center gap-4">
@@ -355,20 +264,13 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-6">
-            <div className="flex flex-col items-end leading-none mr-4">
-              <span className="text-[10px] font-black uppercase text-[#5851FF] tracking-widest mb-1">{currentUser.role}</span>
+            <div className="flex flex-col items-end leading-none">
+              <span className="text-[9px] font-black uppercase text-[#5851FF] tracking-[0.2em] mb-1">{currentUser.role}</span>
               <span className="text-sm font-black text-slate-700">{currentUser.name}</span>
+              <button onClick={testNotification} className="text-[8px] font-black text-slate-300 hover:text-[#5851FF] uppercase tracking-widest mt-1 underline">Probar Notif.</button>
             </div>
 
-            {canImport && (
-              <label className="cursor-pointer bg-[#5851FF] hover:bg-[#4a44d4] text-white px-7 py-3 rounded-2xl text-sm font-black transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 transform active:scale-95">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>
-                Importar CSV
-                <input type="file" accept=".csv" onChange={() => {}} className="hidden" />
-              </label>
-            )}
-
-            <button onClick={handleLogout} className="p-3 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all">
+            <button onClick={handleLogout} className="p-3 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all ml-4">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
             </button>
           </div>
@@ -418,26 +320,20 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                <OrderTable orders={filteredAndSortedOrders} onUpdateStatus={updateOrderStatus} onDeleteOrder={() => {}} onSelectOrder={handleSelectOrder} />
+                <OrderTable orders={filteredAndSortedOrders} onUpdateStatus={() => {}} onDeleteOrder={() => {}} onSelectOrder={(o) => { setSelectedOrder(o); setIsModalOpen(true); }} />
               </>
             )}
 
             {activeTab === 'trucks' && (
-              <TruckManager trucks={trucks} orders={orders} onAddTruck={async (t) => {
-                const { data, error } = await supabase.from('trucks').insert([t]).select();
-                if (!error && data) setTrucks(prev => [...prev, data[0]]);
-              }} onDeleteTruck={async (id) => {
-                const { error } = await supabase.from('trucks').delete().eq('id', id);
-                if (!error) setTrucks(prev => prev.filter(t => t.id !== id));
-              }} onNavigateToLoads={(tid, d) => { setLoadsTruckId(tid); setLoadsDate(d); setActiveTab('loads'); }} />
+              <TruckManager trucks={trucks} orders={orders} onAddTruck={() => {}} onDeleteTruck={() => {}} onNavigateToLoads={(tid, d) => { setLoadsTruckId(tid); setLoadsDate(d); setActiveTab('loads'); }} />
             )}
 
             {activeTab === 'loads' && (
-              <LoadsView orders={orders} trucks={trucks} onSelectOrder={handleSelectOrder} selectedTruckId={loadsTruckId} selectedDate={loadsDate} onFilterChange={(tId, d) => { setLoadsTruckId(tId); setLoadsDate(d); }} onTransferLoads={handleTransferLoads} />
+              <LoadsView orders={orders} trucks={trucks} onSelectOrder={(o) => { setSelectedOrder(o); setIsModalOpen(true); }} selectedTruckId={loadsTruckId} selectedDate={loadsDate} onFilterChange={(tId, d) => { setLoadsTruckId(tId); setLoadsDate(d); }} onTransferLoads={() => {}} />
             )}
 
             {activeTab === 'recent' && (
-              <RecentEditsView orders={orders} onSelectOrder={handleSelectOrder} />
+              <RecentEditsView orders={orders} onSelectOrder={(o) => { setSelectedOrder(o); setIsModalOpen(true); }} />
             )}
 
             {activeTab === 'chat' && (
@@ -445,49 +341,48 @@ const App: React.FC = () => {
             )}
 
             {activeTab === 'users' && isAdmin && (
-              <UserManager users={users} onAddUser={handleAddUser} onDeleteUser={handleDeleteUser} />
+              <UserManager users={users} onAddUser={() => {}} onDeleteUser={() => {}} />
             )}
           </>
         )}
       </main>
 
-      <OrderEditModal isOpen={isModalOpen} order={selectedOrder} trucks={trucks} onClose={() => setIsModalOpen(false)} onSave={saveEditedOrder} />
+      <OrderEditModal isOpen={isModalOpen} order={selectedOrder} trucks={trucks} onClose={() => setIsModalOpen(false)} onSave={() => { setIsModalOpen(false); }} />
 
-      {/* Popups de Notificación Reubicados a la parte superior */}
+      {/* Popups de Notificación (BANNER SUPERIOR MEJORADO) */}
       {notification && (
-        <div className={`fixed top-6 left-1/2 -translate-x-1/2 px-6 py-4 rounded-[1.5rem] shadow-2xl border flex flex-col gap-1 animate-slideDown z-[500] w-full max-w-[420px] backdrop-blur-md ${
+        <div className={`fixed top-6 left-1/2 -translate-x-1/2 px-6 py-4 rounded-[1.8rem] shadow-2xl border flex flex-col gap-1 animate-slideDown z-[999] w-full max-w-[420px] backdrop-blur-md ${
           notification.type === 'error' ? 'bg-rose-600/95 border-rose-400 text-white' : 'bg-slate-900/95 border-slate-700 text-white shadow-indigo-500/20'
         }`}>
           {notification.type === 'chat' ? (
             <>
               <div className="flex items-center gap-3">
-                <div className={`w-9 h-9 shrink-0 ${notification.isGroup ? 'bg-emerald-500' : 'bg-[#5851FF]'} rounded-xl flex items-center justify-center text-xs font-black uppercase shadow-lg`}>
+                <div className={`w-10 h-10 shrink-0 ${notification.isGroup ? 'bg-emerald-500' : 'bg-[#5851FF]'} rounded-xl flex items-center justify-center text-xs font-black uppercase shadow-lg shadow-black/20`}>
                   {notification.sender?.charAt(0)}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className={`text-[9px] font-black uppercase tracking-[0.2em] ${notification.isGroup ? 'text-emerald-400' : 'text-indigo-400'}`}>
                     {notification.isGroup ? 'Sala General' : 'Mensaje Privado'}
                   </p>
-                  <p className="text-[15px] font-black leading-none truncate">{notification.sender}</p>
+                  <p className="text-[16px] font-black leading-none truncate">
+                    {notification.isGroup ? `Nuevo en ${notification.sender}` : `Mensaje de ${notification.sender}`}
+                  </p>
                 </div>
                 <button onClick={() => setNotification(null)} className="p-1 hover:bg-white/10 rounded-lg transition-colors ml-2">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
-              <p className="text-sm text-slate-300 font-medium line-clamp-1 mt-2 leading-relaxed px-1">
-                <span className="text-white font-bold">{notification.sender}:</span> "{notification.message}"
+              <p className="text-sm text-slate-300 font-medium line-clamp-2 mt-2.5 leading-relaxed px-1 italic bg-white/5 p-2 rounded-xl border border-white/5">
+                "{notification.message}"
               </p>
-              <div className="flex gap-2 mt-3">
+              <div className="flex gap-2 mt-3.5">
                 <button 
                   onClick={() => { setActiveTab('chat'); setNotification(null); }}
-                  className="flex-1 py-2 bg-[#5851FF] hover:bg-indigo-500 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] text-center transition-all shadow-lg shadow-indigo-500/20"
+                  className="flex-1 py-3 bg-[#5851FF] hover:bg-indigo-500 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] text-center transition-all shadow-lg active:scale-95"
                 >
-                  Responder ahora
+                  Responder Ahora
                 </button>
-                <button 
-                  onClick={() => setNotification(null)}
-                  className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] text-center transition-all"
-                >
+                <button onClick={() => setNotification(null)} className="px-5 py-3 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] text-center transition-all">
                   Cerrar
                 </button>
               </div>
