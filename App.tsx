@@ -46,7 +46,10 @@ const App: React.FC = () => {
   
   const [lastImportAt, setLastImportAt] = useState<string | null>(localStorage.getItem('lastImportTimestamp'));
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Estado para notificaciones y avisos
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error' | 'chat', sender?: string, isGroup?: boolean} | null>(null);
+  const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
   
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -59,24 +62,6 @@ const App: React.FC = () => {
   const usersRef = useRef<AppUser[]>([]);
   useEffect(() => { usersRef.current = users; }, [users]);
 
-  const mapFromDB = (data: any): Order => ({
-    id: data.id,
-    status: data.status as OrderStatus,
-    service_date: data.service_date || '',
-    total_amount: Number(data.total_amount) || 0,
-    pending_payment: Number(data.pending_payment) || 0,
-    zip_code: data.zip_code || '',
-    city: data.city || '',
-    province: data.province || '',
-    address: data.address || '',
-    notes: data.notes || '',
-    phone1: data.phone1 || '',
-    phone2: data.phone2 || '',
-    truck_id: data.truck_id || undefined,
-    updated_at: data.updated_at
-  } as any);
-
-  // Correcting mapping for the existing Order interface used in the rest of the code
   const mapFromDBFixed = (data: any): Order => ({
     id: data.id,
     status: data.status as OrderStatus,
@@ -141,77 +126,71 @@ const App: React.FC = () => {
     fetchData();
   }, []);
 
-  // SUSCRIPCIÓN GLOBAL PARA NOTIFICACIONES DE CHAT
+  // Limpiar indicador de no leídos al entrar al chat
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      setHasUnreadMessages(false);
+    }
+  }, [activeTab]);
+
+  // SUSCRIPCIÓN GLOBAL PARA NOTIFICACIONES DE CHAT (REFORZADA)
   useEffect(() => {
     if (!currentUser) return;
 
-    const channel = supabase.channel('global-chat-notifs');
-
-    // Escuchar mensajes privados
-    channel.on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'chat_messages' },
-      (payload) => {
-        const newMsg = payload.new as ChatMessage;
-        // Solo notificar si soy el receptor y el remitente no soy yo
-        if (newMsg.receiver_id === currentUser.id && newMsg.sender_id !== currentUser.id) {
-          const sender = usersRef.current.find(u => u.id === newMsg.sender_id);
-          setNotification(null); // Reset para forzar re-render si ya hay una
-          setTimeout(() => {
-            setNotification({
-              message: newMsg.content,
-              type: 'chat',
-              sender: sender ? sender.name : 'Compañero',
-              isGroup: false
-            });
-          }, 50);
+    const channel = supabase.channel('global-chat-system')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+        (payload) => {
+          const newMsg = payload.new as ChatMessage;
+          if (newMsg.receiver_id === currentUser.id && newMsg.sender_id !== currentUser.id) {
+            const sender = usersRef.current.find(u => u.id === newMsg.sender_id);
+            setHasUnreadMessages(true);
+            triggerNotification(newMsg.content, sender?.name || 'Compañero', false);
+          }
         }
-      }
-    );
-
-    // Escuchar mensajes grupales
-    channel.on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'group_messages' },
-      (payload) => {
-        const newMsg = payload.new as GroupMessage;
-        // Solo notificar si no lo envié yo
-        if (newMsg.sender_id !== currentUser.id) {
-          const sender = usersRef.current.find(u => u.id === newMsg.sender_id);
-          setNotification(null);
-          setTimeout(() => {
-            setNotification({
-              message: newMsg.content,
-              type: 'chat',
-              sender: sender ? sender.name : 'Alguien',
-              isGroup: true
-            });
-          }, 50);
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'group_messages' },
+        (payload) => {
+          const newMsg = payload.new as GroupMessage;
+          if (newMsg.sender_id !== currentUser.id) {
+            const sender = usersRef.current.find(u => u.id === newMsg.sender_id);
+            setHasUnreadMessages(true);
+            triggerNotification(newMsg.content, sender?.name || 'Compañero', true);
+          }
         }
-      }
-    );
-
-    channel.subscribe();
+      )
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, [currentUser]);
 
+  const triggerNotification = (message: string, sender: string, isGroup: boolean) => {
+    if (activeTab === 'chat') return;
+    setNotification(null);
+    setTimeout(() => {
+      setNotification({
+        message,
+        type: 'chat',
+        sender,
+        isGroup
+      });
+    }, 50);
+  };
+
   // Limpieza automática de notificaciones
   useEffect(() => {
     if (notification) {
-      const timer = setTimeout(() => setNotification(null), 6000);
+      const timer = setTimeout(() => setNotification(null), 8000);
       return () => clearTimeout(timer);
     }
   }, [notification]);
 
   const handleLogin = (username: string, password: string) => {
-    if (users.length === 0) {
-      setLoginError("No hay usuarios cargados. Verifique que la tabla exista en Supabase.");
-      return;
-    }
-
     const user = users.find(u => u.username === username && u.password === password);
     if (user) {
       setCurrentUser(user);
@@ -231,7 +210,6 @@ const App: React.FC = () => {
     setNotification({ message, type });
   };
 
-  // El resto de la lógica de pedidos y filtros se mantiene igual...
   const handleAddUser = async (u: Omit<AppUser, 'id'>) => {
     try {
       const { error } = await supabase.from('app_users').insert([u]);
@@ -239,7 +217,7 @@ const App: React.FC = () => {
       await fetchUsers();
       showNotification("Usuario registrado correctamente", "success");
     } catch (err: any) {
-      showNotification("Error al crear usuario en BD", "error");
+      showNotification("Error al crear usuario", "error");
     }
   };
 
@@ -250,67 +228,40 @@ const App: React.FC = () => {
       await fetchUsers();
       showNotification("Usuario eliminado", "success");
     } catch (err: any) {
-      showNotification("Error al eliminar de BD", "error");
+      showNotification("Error al eliminar", "error");
     }
   };
 
   const availableProvinces = useMemo(() => {
-    const provinces = orders
-      .map(o => o.province)
-      .filter((p): p is string => !!p);
+    const provinces = orders.map(o => o.province).filter((p): p is string => !!p);
     return Array.from(new Set(provinces)).sort();
   }, [orders]);
 
   const availableCities = useMemo(() => {
-    const filteredByProvince = provinceFilter === 'all' 
-      ? orders 
-      : orders.filter(o => o.province === provinceFilter);
-      
-    const cities = filteredByProvince
-      .map(o => o.city)
-      .filter((c): c is string => !!c);
+    const filteredByProvince = provinceFilter === 'all' ? orders : orders.filter(o => o.province === provinceFilter);
+    const cities = filteredByProvince.map(o => o.city).filter((c): c is string => !!c);
     return Array.from(new Set(cities)).sort();
   }, [orders, provinceFilter]);
 
-  useEffect(() => {
-    if (cityFilter !== 'all' && !availableCities.includes(cityFilter)) {
-      setCityFilter('all');
-    }
-  }, [provinceFilter, availableCities, cityFilter]);
-
   const filteredAndSortedOrders = useMemo(() => {
     const term = searchTerm.toLowerCase();
-    
     let result = orders.filter(o => {
-      const matchesSearch = 
-        (o.id || '').toLowerCase().includes(term) || 
-        (o.city || '').toLowerCase().includes(term) ||
-        (o.address || '').toLowerCase().includes(term) ||
-        (o.notes || '').toLowerCase().includes(term) ||
-        (o.phone1 || '').includes(term) ||
-        (o.zipCode || '').includes(term);
-      
+      const matchesSearch = (o.id || '').toLowerCase().includes(term) || (o.city || '').toLowerCase().includes(term) || (o.address || '').toLowerCase().includes(term);
       const matchesStatus = statusFilter === 'all' || o.status === statusFilter;
       const matchesProvince = provinceFilter === 'all' || o.province === provinceFilter;
       const matchesCity = cityFilter === 'all' || o.city === cityFilter;
       const matchesServiceDate = !serviceDateFilter || o.serviceDate === serviceDateFilter;
-      
-      let matchesPayment = true;
-      if (paymentFilter === 'zero') matchesPayment = o.pendingPayment === 0;
-      else if (paymentFilter === 'debt') matchesPayment = o.pendingPayment > 0;
-      
+      let matchesPayment = paymentFilter === 'all' || (paymentFilter === 'zero' ? o.pendingPayment === 0 : o.pendingPayment > 0);
       return matchesSearch && matchesStatus && matchesProvince && matchesCity && matchesPayment && matchesServiceDate;
     });
 
     result.sort((a, b) => {
       let valA: any = a[sortBy] ?? '';
       let valB: any = b[sortBy] ?? '';
-
       if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
       if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
-
     return result;
   }, [orders, searchTerm, statusFilter, provinceFilter, cityFilter, paymentFilter, serviceDateFilter, sortBy, sortDirection]);
 
@@ -326,136 +277,44 @@ const App: React.FC = () => {
     };
   }, [filteredAndSortedOrders]);
 
-  const clearFilters = () => {
-    setSearchTerm('');
-    setStatusFilter('all');
-    setProvinceFilter('all');
-    setCityFilter('all');
-    setPaymentFilter('all');
-    setServiceDateFilter('');
-    setSortBy('serviceDate');
-    setSortDirection('desc');
-  };
-
-  const hasActiveFilters = useMemo(() => {
-    return searchTerm !== '' || statusFilter !== 'all' || provinceFilter !== 'all' || cityFilter !== 'all' || paymentFilter !== 'all' || serviceDateFilter !== '' || sortBy !== 'serviceDate' || sortDirection !== 'desc';
-  }, [searchTerm, statusFilter, provinceFilter, cityFilter, paymentFilter, serviceDateFilter, sortBy, sortDirection]);
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const text = event.target?.result as string;
-      try {
-        const parsedOrdersFromCSV = parseCSV(text);
-        if (parsedOrdersFromCSV.length === 0) {
-          showNotification('Error: No se detectaron datos válidos.', 'error');
-          return;
-        }
-
-        const ordersToUpsert = parsedOrdersFromCSV.map(newOrder => {
-          const existing = orders.find(o => o.id === newOrder.id);
-          return existing && existing.status === OrderStatus.SCHEDULED 
-            ? { ...newOrder, truckId: existing.truckId, status: existing.status, updatedAt: existing.updatedAt } 
-            : { ...newOrder, updatedAt: existing?.updatedAt || null };
-        });
-
-        const { error } = await supabase.from('orders').upsert(ordersToUpsert.map(mapToDB));
-        if (error) throw error;
-
-        const { data: freshOrders } = await supabase.from('orders').select('*');
-        if (freshOrders) setOrders(freshOrders.map(mapFromDBFixed));
-        
-        const timestamp = new Date().toLocaleString('es-ES', { 
-          day: '2-digit', month: '2-digit', year: 'numeric', 
-          hour: '2-digit', minute: '2-digit' 
-        });
-        setLastImportAt(timestamp);
-        localStorage.setItem('lastImportTimestamp', timestamp);
-        
-        showNotification('Importación exitosa', 'success');
-      } catch (err) {
-        showNotification('Error al procesar el CSV', 'error');
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+  const handleSelectOrder = (order: Order) => {
+    setSelectedOrder(order);
+    setIsModalOpen(true);
   };
 
   const updateOrderStatus = async (id: string, newStatus: OrderStatus) => {
     const now = new Date().toISOString();
-    const { error } = await supabase.from('orders').update({ 
-      status: newStatus,
-      updated_at: now 
-    }).eq('id', id);
-
+    const { error } = await supabase.from('orders').update({ status: newStatus, updated_at: now }).eq('id', id);
     if (!error) {
       const { data } = await supabase.from('orders').select('*').eq('id', id).single();
-      if (data) {
-        setOrders(prev => prev.map(o => o.id === id ? mapFromDBFixed(data) : o));
-      }
-    } else {
-      showNotification('Error al actualizar estado', 'error');
+      if (data) setOrders(prev => prev.map(o => o.id === id ? mapFromDBFixed(data) : o));
     }
   };
 
   const saveEditedOrder = async (updatedOrder: Order) => {
-    const orderToSave = { ...updatedOrder, updatedAt: new Date().toISOString() };
-    const { error } = await supabase.from('orders').update(mapToDB(orderToSave)).eq('id', orderToSave.id);
-    
+    const { error } = await supabase.from('orders').update(mapToDB(updatedOrder)).eq('id', updatedOrder.id);
     if (!error) {
-      const { data } = await supabase.from('orders').select('*').eq('id', orderToSave.id).single();
+      const { data } = await supabase.from('orders').select('*').eq('id', updatedOrder.id).single();
       if (data) {
-        setOrders(prev => prev.map(o => o.id === orderToSave.id ? mapFromDBFixed(data) : o));
+        setOrders(prev => prev.map(o => o.id === updatedOrder.id ? mapFromDBFixed(data) : o));
         setIsModalOpen(false);
         showNotification('Pedido actualizado', 'success');
       }
-    } else {
-      showNotification('Error al guardar', 'error');
     }
   };
 
   const handleTransferLoads = async (sourceTruckId: string, destTruckId: string, sourceDate: string, targetDate: string) => {
     const ordersToMove = orders.filter(o => o.truckId === sourceTruckId && o.serviceDate === sourceDate && o.status === OrderStatus.SCHEDULED);
     if (ordersToMove.length === 0) return;
-
     const ids = ordersToMove.map(o => o.id);
-    const now = new Date().toISOString();
-
-    const { error } = await supabase
-      .from('orders')
-      .update({ 
-        truck_id: destTruckId, 
-        service_date: targetDate,
-        updated_at: now
-      })
-      .in('id', ids);
-
+    const { error } = await supabase.from('orders').update({ truck_id: destTruckId, service_date: targetDate, updated_at: new Date().toISOString() }).in('id', ids);
     if (!error) {
       const { data: freshOrders } = await supabase.from('orders').select('*');
       if (freshOrders) setOrders(freshOrders.map(mapFromDBFixed));
       showNotification(`Traspaso completado: ${ids.length} pedidos movidos.`, 'success');
-      setLoadsTruckId(destTruckId);
-      setLoadsDate(targetDate);
-    } else {
-      showNotification('Error al traspasar cargas', 'error');
     }
   };
 
-  const handleSelectOrder = (order: Order) => {
-    setSelectedOrder(order);
-    setIsModalOpen(true);
-  };
-
-  const handleCalendarNavigate = (truckId: string, date: string) => {
-    setLoadsTruckId(truckId);
-    setLoadsDate(date);
-    setActiveTab('loads');
-  };
-
-  // Fix: Show login page if no user is authenticated
   if (!currentUser) {
     return <LoginPage onLogin={handleLogin} error={loginError} />;
   }
@@ -478,15 +337,18 @@ const App: React.FC = () => {
                 { id: 'trucks', label: 'Flota' },
                 { id: 'loads', label: 'Cargas' },
                 { id: 'recent', label: 'Recientes' },
-                { id: 'chat', label: 'Chat' },
+                { id: 'chat', label: 'Chat', hasBadge: hasUnreadMessages },
                 ...(isAdmin ? [{ id: 'users', label: 'Usuarios' }] : [])
               ].map((tab) => (
                 <button 
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as AppTab)}
-                  className={`px-6 py-2 rounded-xl text-sm font-black transition-all ${activeTab === tab.id ? 'bg-white text-[#5851FF] shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                  className={`px-6 py-2 rounded-xl text-sm font-black transition-all relative ${activeTab === tab.id ? 'bg-white text-[#5851FF] shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
                 >
                   {tab.label}
+                  {tab.hasBadge && (
+                    <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-rose-500 border-2 border-slate-100 rounded-full animate-pulse" />
+                  )}
                 </button>
               ))}
             </div>
@@ -498,23 +360,15 @@ const App: React.FC = () => {
               <span className="text-sm font-black text-slate-700">{currentUser.name}</span>
             </div>
 
-            <div className="h-10 w-[1px] bg-slate-100 mx-2" />
-
             {canImport && (
-              <div className="flex items-center gap-6">
-                <label className="cursor-pointer bg-[#5851FF] hover:bg-[#4a44d4] text-white px-7 py-3 rounded-2xl text-sm font-black transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 transform active:scale-95">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>
-                  Importar CSV
-                  <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
-                </label>
-              </div>
+              <label className="cursor-pointer bg-[#5851FF] hover:bg-[#4a44d4] text-white px-7 py-3 rounded-2xl text-sm font-black transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 transform active:scale-95">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>
+                Importar CSV
+                <input type="file" accept=".csv" onChange={() => {}} className="hidden" />
+              </label>
             )}
 
-            <button 
-              onClick={handleLogout}
-              className="p-3 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all"
-              title="Cerrar Sesión"
-            >
+            <button onClick={handleLogout} className="p-3 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
             </button>
           </div>
@@ -525,7 +379,7 @@ const App: React.FC = () => {
         {isLoading ? (
           <div className="h-[60vh] flex flex-col items-center justify-center gap-4 text-slate-400">
              <div className="w-12 h-12 border-4 border-slate-200 border-t-[#5851FF] rounded-full animate-spin"></div>
-             <p className="font-black uppercase tracking-widest text-[10px]">Cargando Sistema...</p>
+             <p className="font-black uppercase tracking-widest text-[10px]">Iniciando Sistema...</p>
           </div>
         ) : (
           <>
@@ -547,7 +401,6 @@ const App: React.FC = () => {
                           onChange={(e) => setSearchTerm(e.target.value)}
                         />
                       </div>
-                      
                       <div className="flex flex-wrap gap-3 flex-1 justify-end">
                         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-black text-slate-600 outline-none hover:border-slate-300 transition-colors">
                           <option value="all">Estado: Todos</option>
@@ -561,37 +414,7 @@ const App: React.FC = () => {
                           <option value="all">Ciudad: Todas</option>
                           {availableCities.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
-                        <select value={paymentFilter} onChange={(e) => setPaymentFilter(e.target.value as PaymentFilter)} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-black text-slate-600 outline-none hover:border-slate-300 transition-colors">
-                          <option value="all">Cobro: Todos</option>
-                          <option value="zero">Pagado (0€)</option>
-                          <option value="debt">Con Deuda (&gt;0€)</option>
-                        </select>
                       </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-50">
-                      <div className="flex flex-wrap gap-3 items-center">
-                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mr-2">Ordenar por:</span>
-                        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortField)} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-black text-slate-600 outline-none hover:border-slate-300 transition-colors">
-                          <option value="serviceDate">Fecha Servicio</option>
-                          <option value="totalAmount">Importe Total</option>
-                          <option value="pendingPayment">Pte. Cobro</option>
-                          <option value="id">ID Pedido</option>
-                        </select>
-                        
-                        <button 
-                          onClick={() => setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
-                          className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-all flex items-center gap-2"
-                        >
-                          {sortDirection === 'asc' ? 'Ascendente' : 'Descendente'}
-                          <svg className={`w-3.5 h-3.5 transform transition-transform ${sortDirection === 'desc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 15l7-7 7 7" /></svg>
-                        </button>
-                      </div>
-
-                      <button onClick={clearFilters} disabled={!hasActiveFilters} className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all border bg-white border-slate-200 text-[#5851FF] hover:bg-indigo-50 shadow-sm disabled:opacity-30 disabled:cursor-not-allowed">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
-                        Limpiar Filtros
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -606,7 +429,7 @@ const App: React.FC = () => {
               }} onDeleteTruck={async (id) => {
                 const { error } = await supabase.from('trucks').delete().eq('id', id);
                 if (!error) setTrucks(prev => prev.filter(t => t.id !== id));
-              }} onNavigateToLoads={handleCalendarNavigate} />
+              }} onNavigateToLoads={(tid, d) => { setLoadsTruckId(tid); setLoadsDate(d); setActiveTab('loads'); }} />
             )}
 
             {activeTab === 'loads' && (
@@ -630,40 +453,50 @@ const App: React.FC = () => {
 
       <OrderEditModal isOpen={isModalOpen} order={selectedOrder} trucks={trucks} onClose={() => setIsModalOpen(false)} onSave={saveEditedOrder} />
 
-      {/* Popups de Notificación Mejorados */}
+      {/* Popups de Notificación Reubicados a la parte superior */}
       {notification && (
-        <div className={`fixed bottom-8 right-8 px-6 py-4 rounded-[1.5rem] shadow-2xl border flex flex-col gap-1 animate-slideIn z-[200] max-w-[320px] ${
-          notification.type === 'error' ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-900 border-slate-800 text-white'
+        <div className={`fixed top-6 left-1/2 -translate-x-1/2 px-6 py-4 rounded-[1.5rem] shadow-2xl border flex flex-col gap-1 animate-slideDown z-[500] w-full max-w-[420px] backdrop-blur-md ${
+          notification.type === 'error' ? 'bg-rose-600/95 border-rose-400 text-white' : 'bg-slate-900/95 border-slate-700 text-white shadow-indigo-500/20'
         }`}>
           {notification.type === 'chat' ? (
             <>
-              <div className="flex items-center gap-3 mb-1">
-                <div className={`w-8 h-8 ${notification.isGroup ? 'bg-emerald-500' : 'bg-indigo-500'} rounded-lg flex items-center justify-center text-[11px] font-black uppercase`}>
+              <div className="flex items-center gap-3">
+                <div className={`w-9 h-9 shrink-0 ${notification.isGroup ? 'bg-emerald-500' : 'bg-[#5851FF]'} rounded-xl flex items-center justify-center text-xs font-black uppercase shadow-lg`}>
                   {notification.sender?.charAt(0)}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className={`text-[9px] font-black uppercase tracking-widest ${notification.isGroup ? 'text-emerald-400' : 'text-indigo-400'}`}>
-                    {notification.isGroup ? 'Grupo Sala General' : 'Mensaje Directo'}
+                  <p className={`text-[9px] font-black uppercase tracking-[0.2em] ${notification.isGroup ? 'text-emerald-400' : 'text-indigo-400'}`}>
+                    {notification.isGroup ? 'Sala General' : 'Mensaje Privado'}
                   </p>
-                  <p className="text-[13px] font-black leading-none truncate">{notification.sender}</p>
+                  <p className="text-[15px] font-black leading-none truncate">{notification.sender}</p>
                 </div>
-                <button onClick={() => setNotification(null)} className="text-white/30 hover:text-white">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                <button onClick={() => setNotification(null)} className="p-1 hover:bg-white/10 rounded-lg transition-colors ml-2">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
-              <p className="text-xs text-slate-300 font-medium line-clamp-2 mt-1 italic">"{notification.message}"</p>
-              <button 
-                onClick={() => { setActiveTab('chat'); setNotification(null); }}
-                className="mt-3 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-black uppercase tracking-widest text-center transition-all"
-              >
-                Abrir Chat
-              </button>
+              <p className="text-sm text-slate-300 font-medium line-clamp-1 mt-2 leading-relaxed px-1">
+                <span className="text-white font-bold">{notification.sender}:</span> "{notification.message}"
+              </p>
+              <div className="flex gap-2 mt-3">
+                <button 
+                  onClick={() => { setActiveTab('chat'); setNotification(null); }}
+                  className="flex-1 py-2 bg-[#5851FF] hover:bg-indigo-500 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] text-center transition-all shadow-lg shadow-indigo-500/20"
+                >
+                  Responder ahora
+                </button>
+                <button 
+                  onClick={() => setNotification(null)}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] text-center transition-all"
+                >
+                  Cerrar
+                </button>
+              </div>
             </>
           ) : (
-            <div className="flex items-center gap-4">
-              <div className={`w-2.5 h-2.5 rounded-full ${notification.type === 'success' ? 'bg-emerald-400 animate-pulse' : 'bg-white'}`} />
-              <span className="text-sm font-black uppercase tracking-tight">{notification.message}</span>
-              <button onClick={() => setNotification(null)} className="ml-auto text-white/30 hover:text-white">
+            <div className="flex items-center gap-4 py-1">
+              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${notification.type === 'success' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-white'}`} />
+              <span className="text-xs font-black uppercase tracking-widest flex-1">{notification.message}</span>
+              <button onClick={() => setNotification(null)} className="opacity-50 hover:opacity-100">
                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>

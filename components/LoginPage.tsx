@@ -46,7 +46,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, error }) => {
             </svg>
           </div>
           <h1 className="text-2xl font-black text-white tracking-tighter text-center relative z-10">DistriGestión <span className="opacity-70 font-light">v1.0</span></h1>
-          <p className="text-white/70 text-[10px] font-black uppercase tracking-[0.2em] mt-2 relative z-10">Plataforma Logística Profesional</p>
+          <p className="text-white/70 text-[10px] font-black uppercase tracking-[0.2em] mt-2 relative z-10">Desarrollado por Ilde</p>
         </div>
         
         <form onSubmit={handleSubmit} className="p-10 space-y-6">
