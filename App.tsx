@@ -539,7 +539,7 @@ const App: React.FC = () => {
                         <select value={paymentFilter} onChange={(e) => setPaymentFilter(e.target.value as PaymentFilter)} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-black text-slate-600 outline-none hover:border-slate-300 transition-colors">
                           <option value="all">Cobro: Todos</option>
                           <option value="zero">Pagado (0€)</option>
-                          <option value="debt">Con Deuda (>0€)</option>
+                          <option value="debt">Con Deuda (&gt;0€)</option>
                         </select>
                       </div>
                     </div>
@@ -625,6 +625,7 @@ const App: React.FC = () => {
 
       <OrderEditModal isOpen={isModalOpen} order={selectedOrder} trucks={trucks} onClose={() => setIsModalOpen(false)} onSave={saveEditedOrder} />
 
+      {/* Popups de Notificación Mejorados para Chat */}
       {notification && (
         <div className={`fixed bottom-10 right-8 px-8 py-5 rounded-[2rem] shadow-2xl border flex flex-col gap-1 animate-slideIn z-[100] max-w-sm ${
           notification.type === 'error' ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-900 border-slate-800 text-white'
