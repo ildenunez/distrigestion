@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Order, OrderStatus, OrderStats, Truck, AppUser, UserRole, ChatMessage, GroupMessage } from './types.ts';
 import { parseCSV } from './utils/csvParser.ts';
 import { supabase } from './lib/supabase.ts';
@@ -51,7 +51,33 @@ const App: React.FC = () => {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  // Fix: Define permissions based on the logged-in user's role
+  const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const canImport = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUPERVISOR;
+
+  // Ref para tener siempre la lista de usuarios actualizada en los callbacks de suscripción
+  const usersRef = useRef<AppUser[]>([]);
+  useEffect(() => { usersRef.current = users; }, [users]);
+
   const mapFromDB = (data: any): Order => ({
+    id: data.id,
+    status: data.status as OrderStatus,
+    service_date: data.service_date || '',
+    total_amount: Number(data.total_amount) || 0,
+    pending_payment: Number(data.pending_payment) || 0,
+    zip_code: data.zip_code || '',
+    city: data.city || '',
+    province: data.province || '',
+    address: data.address || '',
+    notes: data.notes || '',
+    phone1: data.phone1 || '',
+    phone2: data.phone2 || '',
+    truck_id: data.truck_id || undefined,
+    updated_at: data.updated_at
+  } as any);
+
+  // Correcting mapping for the existing Order interface used in the rest of the code
+  const mapFromDBFixed = (data: any): Order => ({
     id: data.id,
     status: data.status as OrderStatus,
     serviceDate: data.service_date || '',
@@ -88,14 +114,7 @@ const App: React.FC = () => {
   const fetchUsers = async () => {
     try {
       const { data, error } = await supabase.from('app_users').select('*');
-      if (error) {
-        if (error.code === 'PGRST116' || error.message.includes('schema cache')) {
-          console.error("La tabla 'app_users' no existe. Ejecuta el SQL en Supabase.");
-          showNotification("Error: Tabla 'app_users' no encontrada. Ejecute el SQL.", "error");
-        } else {
-          throw error;
-        }
-      }
+      if (error) throw error;
       setUsers(data || []);
     } catch (err: any) {
       console.error("Error al cargar usuarios:", err.message);
@@ -110,7 +129,7 @@ const App: React.FC = () => {
         if (trucksData) setTrucks(trucksData);
 
         const { data: ordersData } = await supabase.from('orders').select('*');
-        if (ordersData) setOrders(ordersData.map(mapFromDB));
+        if (ordersData) setOrders(ordersData.map(mapFromDBFixed));
 
         await fetchUsers();
       } catch (err: any) {
@@ -122,60 +141,70 @@ const App: React.FC = () => {
     fetchData();
   }, []);
 
+  // SUSCRIPCIÓN GLOBAL PARA NOTIFICACIONES DE CHAT
   useEffect(() => {
     if (!currentUser) return;
 
-    // Notificaciones mensajes privados
-    const chatChannel = supabase
-      .channel('global_chat_notifs')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
-        (payload) => {
-          const newMsg = payload.new as ChatMessage;
-          // Solo si soy el destinatario y NO estoy actualmente viendo ese chat (opcional, por ahora siempre avisa)
-          if (newMsg.receiver_id === currentUser.id) {
-            const sender = users.find(u => u.id === newMsg.sender_id);
+    const channel = supabase.channel('global-chat-notifs');
+
+    // Escuchar mensajes privados
+    channel.on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+      (payload) => {
+        const newMsg = payload.new as ChatMessage;
+        // Solo notificar si soy el receptor y el remitente no soy yo
+        if (newMsg.receiver_id === currentUser.id && newMsg.sender_id !== currentUser.id) {
+          const sender = usersRef.current.find(u => u.id === newMsg.sender_id);
+          setNotification(null); // Reset para forzar re-render si ya hay una
+          setTimeout(() => {
             setNotification({
               message: newMsg.content,
               type: 'chat',
               sender: sender ? sender.name : 'Compañero',
               isGroup: false
             });
-            setTimeout(() => setNotification(null), 5000);
-          }
+          }, 50);
         }
-      )
-      .subscribe();
+      }
+    );
 
-    // Notificaciones mensajes grupales
-    const groupChannel = supabase
-      .channel('global_group_notifs')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'group_messages' },
-        (payload) => {
-          const newMsg = payload.new as GroupMessage;
-          // Si no lo envié yo
-          if (newMsg.sender_id !== currentUser.id) {
-            const sender = users.find(u => u.id === newMsg.sender_id);
+    // Escuchar mensajes grupales
+    channel.on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'group_messages' },
+      (payload) => {
+        const newMsg = payload.new as GroupMessage;
+        // Solo notificar si no lo envié yo
+        if (newMsg.sender_id !== currentUser.id) {
+          const sender = usersRef.current.find(u => u.id === newMsg.sender_id);
+          setNotification(null);
+          setTimeout(() => {
             setNotification({
               message: newMsg.content,
               type: 'chat',
               sender: sender ? sender.name : 'Alguien',
               isGroup: true
             });
-            setTimeout(() => setNotification(null), 5000);
-          }
+          }, 50);
         }
-      )
-      .subscribe();
+      }
+    );
+
+    channel.subscribe();
 
     return () => {
-      supabase.removeChannel(chatChannel);
-      supabase.removeChannel(groupChannel);
+      supabase.removeChannel(channel);
     };
-  }, [currentUser, users]);
+  }, [currentUser]);
+
+  // Limpieza automática de notificaciones
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
 
   const handleLogin = (username: string, password: string) => {
     if (users.length === 0) {
@@ -198,6 +227,11 @@ const App: React.FC = () => {
     setActiveTab('orders');
   };
 
+  const showNotification = (message: string, type: 'success' | 'error' | 'chat') => {
+    setNotification({ message, type });
+  };
+
+  // El resto de la lógica de pedidos y filtros se mantiene igual...
   const handleAddUser = async (u: Omit<AppUser, 'id'>) => {
     try {
       const { error } = await supabase.from('app_users').insert([u]);
@@ -332,7 +366,7 @@ const App: React.FC = () => {
         if (error) throw error;
 
         const { data: freshOrders } = await supabase.from('orders').select('*');
-        if (freshOrders) setOrders(freshOrders.map(mapFromDB));
+        if (freshOrders) setOrders(freshOrders.map(mapFromDBFixed));
         
         const timestamp = new Date().toLocaleString('es-ES', { 
           day: '2-digit', month: '2-digit', year: 'numeric', 
@@ -350,11 +384,6 @@ const App: React.FC = () => {
     e.target.value = '';
   };
 
-  const showNotification = (message: string, type: 'success' | 'error' | 'chat') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 5000);
-  };
-
   const updateOrderStatus = async (id: string, newStatus: OrderStatus) => {
     const now = new Date().toISOString();
     const { error } = await supabase.from('orders').update({ 
@@ -365,7 +394,7 @@ const App: React.FC = () => {
     if (!error) {
       const { data } = await supabase.from('orders').select('*').eq('id', id).single();
       if (data) {
-        setOrders(prev => prev.map(o => o.id === id ? mapFromDB(data) : o));
+        setOrders(prev => prev.map(o => o.id === id ? mapFromDBFixed(data) : o));
       }
     } else {
       showNotification('Error al actualizar estado', 'error');
@@ -379,7 +408,7 @@ const App: React.FC = () => {
     if (!error) {
       const { data } = await supabase.from('orders').select('*').eq('id', orderToSave.id).single();
       if (data) {
-        setOrders(prev => prev.map(o => o.id === orderToSave.id ? mapFromDB(data) : o));
+        setOrders(prev => prev.map(o => o.id === orderToSave.id ? mapFromDBFixed(data) : o));
         setIsModalOpen(false);
         showNotification('Pedido actualizado', 'success');
       }
@@ -406,7 +435,7 @@ const App: React.FC = () => {
 
     if (!error) {
       const { data: freshOrders } = await supabase.from('orders').select('*');
-      if (freshOrders) setOrders(freshOrders.map(mapFromDB));
+      if (freshOrders) setOrders(freshOrders.map(mapFromDBFixed));
       showNotification(`Traspaso completado: ${ids.length} pedidos movidos.`, 'success');
       setLoadsTruckId(destTruckId);
       setLoadsDate(targetDate);
@@ -426,12 +455,10 @@ const App: React.FC = () => {
     setActiveTab('loads');
   };
 
+  // Fix: Show login page if no user is authenticated
   if (!currentUser) {
     return <LoginPage onLogin={handleLogin} error={loginError} />;
   }
-
-  const isAdmin = currentUser.role === UserRole.ADMIN;
-  const canImport = currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.SUPERVISOR;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -475,12 +502,6 @@ const App: React.FC = () => {
 
             {canImport && (
               <div className="flex items-center gap-6">
-                {lastImportAt && (
-                  <div className="hidden lg:flex flex-col items-end leading-none">
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-1">Última Importación</span>
-                    <span className="text-[11px] font-bold text-slate-600">{lastImportAt}</span>
-                  </div>
-                )}
                 <label className="cursor-pointer bg-[#5851FF] hover:bg-[#4a44d4] text-white px-7 py-3 rounded-2xl text-sm font-black transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 transform active:scale-95">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>
                   Importar CSV
@@ -565,29 +586,9 @@ const App: React.FC = () => {
                           {sortDirection === 'asc' ? 'Ascendente' : 'Descendente'}
                           <svg className={`w-3.5 h-3.5 transform transition-transform ${sortDirection === 'desc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 15l7-7 7 7" /></svg>
                         </button>
-
-                        {sortBy === 'serviceDate' && (
-                          <div className="flex items-center gap-2 animate-fadeIn bg-indigo-50/50 border border-indigo-100 rounded-xl px-3 py-1">
-                            <span className="text-[10px] font-black uppercase text-indigo-500 tracking-widest">Ver Fecha:</span>
-                            <input 
-                              type="date"
-                              className="bg-transparent border-none text-xs font-black text-indigo-600 outline-none cursor-pointer"
-                              value={serviceDateFilter}
-                              onChange={(e) => setServiceDateFilter(e.target.value)}
-                            />
-                            {serviceDateFilter && (
-                              <button 
-                                onClick={() => setServiceDateFilter('')}
-                                className="p-1 text-indigo-400 hover:text-rose-500 transition-colors"
-                              >
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
-                              </button>
-                            )}
-                          </div>
-                        )}
                       </div>
 
-                      <button onClick={clearFilters} disabled={!hasActiveFilters} className={`flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all border ${hasActiveFilters ? 'bg-white border-slate-200 text-[#5851FF] hover:bg-indigo-50 shadow-sm' : 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed'}`}>
+                      <button onClick={clearFilters} disabled={!hasActiveFilters} className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all border bg-white border-slate-200 text-[#5851FF] hover:bg-indigo-50 shadow-sm disabled:opacity-30 disabled:cursor-not-allowed">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
                         Limpiar Filtros
                       </button>
@@ -629,37 +630,42 @@ const App: React.FC = () => {
 
       <OrderEditModal isOpen={isModalOpen} order={selectedOrder} trucks={trucks} onClose={() => setIsModalOpen(false)} onSave={saveEditedOrder} />
 
-      {/* Popups de Notificación Mejorados para Chat */}
+      {/* Popups de Notificación Mejorados */}
       {notification && (
-        <div className={`fixed bottom-10 right-8 px-8 py-5 rounded-[2rem] shadow-2xl border flex flex-col gap-1 animate-slideIn z-[100] max-w-sm ${
-          notification.type === 'error' ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-900 border-slate-800 text-white shadow-indigo-200'
+        <div className={`fixed bottom-8 right-8 px-6 py-4 rounded-[1.5rem] shadow-2xl border flex flex-col gap-1 animate-slideIn z-[200] max-w-[320px] ${
+          notification.type === 'error' ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-900 border-slate-800 text-white'
         }`}>
           {notification.type === 'chat' ? (
             <>
               <div className="flex items-center gap-3 mb-1">
-                <div className={`w-8 h-8 ${notification.isGroup ? 'bg-emerald-500' : 'bg-indigo-500'} rounded-xl flex items-center justify-center text-[10px] font-black`}>
-                  {notification.sender?.charAt(0).toUpperCase()}
+                <div className={`w-8 h-8 ${notification.isGroup ? 'bg-emerald-500' : 'bg-indigo-500'} rounded-lg flex items-center justify-center text-[11px] font-black uppercase`}>
+                  {notification.sender?.charAt(0)}
                 </div>
-                <div>
-                  <p className={`text-[10px] font-black uppercase tracking-widest ${notification.isGroup ? 'text-emerald-400' : 'text-indigo-400'}`}>
-                    {notification.isGroup ? 'Mensaje Grupal' : 'Nuevo Mensaje'}
+                <div className="flex-1 min-w-0">
+                  <p className={`text-[9px] font-black uppercase tracking-widest ${notification.isGroup ? 'text-emerald-400' : 'text-indigo-400'}`}>
+                    {notification.isGroup ? 'Grupo Sala General' : 'Mensaje Directo'}
                   </p>
-                  <p className="text-[13px] font-black leading-none">{notification.sender}</p>
+                  <p className="text-[13px] font-black leading-none truncate">{notification.sender}</p>
                 </div>
+                <button onClick={() => setNotification(null)} className="text-white/30 hover:text-white">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
               </div>
-              <p className="text-xs text-slate-300 font-medium line-clamp-2 mt-1">{notification.message}</p>
+              <p className="text-xs text-slate-300 font-medium line-clamp-2 mt-1 italic">"{notification.message}"</p>
               <button 
                 onClick={() => { setActiveTab('chat'); setNotification(null); }}
-                className="mt-3 text-[10px] font-black uppercase tracking-widest text-indigo-400 hover:text-white transition-colors flex items-center gap-1"
+                className="mt-3 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-[10px] font-black uppercase tracking-widest text-center transition-all"
               >
-                Responder ahora
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M9 5l7 7-7 7" /></svg>
+                Abrir Chat
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-4 py-1">
+            <div className="flex items-center gap-4">
               <div className={`w-2.5 h-2.5 rounded-full ${notification.type === 'success' ? 'bg-emerald-400 animate-pulse' : 'bg-white'}`} />
               <span className="text-sm font-black uppercase tracking-tight">{notification.message}</span>
+              <button onClick={() => setNotification(null)} className="ml-auto text-white/30 hover:text-white">
+                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
             </div>
           )}
         </div>

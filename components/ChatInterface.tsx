@@ -20,17 +20,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Filtrar para no mostrarse a sí mismo en la lista
   const chatPartners = useMemo(() => {
     return users.filter(u => u.id !== currentUser.id);
   }, [users, currentUser]);
 
-  // Suscripción en tiempo real unificada
+  // SUSCRIPCIÓN EN TIEMPO REAL LOCAL (Solo para actualizar la vista activa)
   useEffect(() => {
     if (!selectedChat) return;
 
-    const channelName = `chat_${selectedChat.type}_${selectedChat.id}`;
-    const channel = supabase.channel(channelName);
+    // Escuchar específicamente lo que nos interesa para el chat abierto
+    const channel = supabase.channel(`active-chat-${selectedChat.id}`);
 
     if (selectedChat.type === 'private') {
       channel.on(
@@ -38,14 +37,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
         { event: 'INSERT', schema: 'public', table: 'chat_messages' },
         (payload) => {
           const newMsg = payload.new as ChatMessage;
-          // Validar si el mensaje pertenece a la conversación actual
-          const isRelated = 
+          const isFromOrToMe = 
             (newMsg.sender_id === currentUser.id && newMsg.receiver_id === selectedChat.id) ||
             (newMsg.sender_id === selectedChat.id && newMsg.receiver_id === currentUser.id);
 
-          if (isRelated) {
+          if (isFromOrToMe) {
             setMessages(prev => {
-              // Evitar duplicados si el Optimistic UI ya lo insertó
               if (prev.some(m => m.id === newMsg.id)) return prev;
               return [...prev, newMsg];
             });
@@ -71,15 +68,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
     };
   }, [currentUser, selectedChat]);
 
-  // Cargar mensajes al cambiar de chat
+  // CARGA INICIAL DE MENSAJES
   useEffect(() => {
     if (selectedChat) {
       loadMessages();
     }
   }, [selectedChat]);
 
+  // Scroll automático
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const loadMessages = async () => {
@@ -111,78 +109,46 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !selectedChat) return;
-
     const content = newMessage.trim();
+    if (!content || !selectedChat) return;
+
     setNewMessage('');
 
-    // --- Optimistic UI ---
-    // Creamos un ID temporal para mostrar el mensaje de inmediato
-    const tempId = crypto.randomUUID();
+    // Optimistic UI: Insertar temporalmente
+    const tempId = `temp-${Date.now()}`;
     const now = new Date().toISOString();
-    
-    const optimisticMessage = selectedChat.type === 'private' 
-      ? ({ 
-          id: tempId, 
-          sender_id: currentUser.id, 
-          receiver_id: selectedChat.id, 
-          content, 
-          is_read: false, 
-          created_at: now 
-        } as ChatMessage)
-      : ({ 
-          id: tempId, 
-          sender_id: currentUser.id, 
-          content, 
-          created_at: now 
-        } as GroupMessage);
+    const optimisticMsg = {
+      id: tempId,
+      sender_id: currentUser.id,
+      content: content,
+      created_at: now,
+      ...(selectedChat.type === 'private' ? { receiver_id: selectedChat.id, is_read: false } : {})
+    };
 
-    setMessages(prev => [...prev, optimisticMessage]);
-    // ---------------------
+    setMessages(prev => [...prev, optimisticMsg as any]);
 
     try {
       if (selectedChat.type === 'private') {
         const { data, error } = await supabase
           .from('chat_messages')
-          .insert([{
-            sender_id: currentUser.id,
-            receiver_id: selectedChat.id,
-            content: content
-          }])
-          .select()
-          .single();
-        
+          .insert([{ sender_id: currentUser.id, receiver_id: selectedChat.id, content: content }])
+          .select().single();
         if (error) throw error;
-        
-        // Reemplazar el mensaje optimista con el real de la BD para tener el ID correcto
-        if (data) {
-          setMessages(prev => prev.map(m => m.id === tempId ? data : m));
-        }
+        // Reemplazar el temporal con el real
+        if (data) setMessages(prev => prev.map(m => m.id === tempId ? data : m));
       } else {
         const { data, error } = await supabase
           .from('group_messages')
-          .insert([{
-            sender_id: currentUser.id,
-            content: content
-          }])
-          .select()
-          .single();
-        
+          .insert([{ sender_id: currentUser.id, content: content }])
+          .select().single();
         if (error) throw error;
-        
-        if (data) {
-          setMessages(prev => prev.map(m => m.id === tempId ? data : m));
-        }
+        if (data) setMessages(prev => prev.map(m => m.id === tempId ? data : m));
       }
     } catch (err) {
       console.error("Error enviando mensaje:", err);
-      // Revertir el mensaje optimista en caso de error
+      // Quitar de la UI si falló
       setMessages(prev => prev.filter(m => m.id !== tempId));
     }
-  };
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   const formatTime = (dateStr: string) => {
@@ -202,7 +168,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
       <div className="w-80 border-r border-slate-100 flex flex-col bg-slate-50/50">
         <div className="p-8 border-b border-slate-100">
           <h2 className="text-xl font-black text-slate-800 tracking-tight">Compañeros</h2>
-          <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mt-1">Canales de Chat</p>
+          <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mt-1">Sincronizado en vivo</p>
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -222,11 +188,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-black text-slate-700 truncate">Sala General</div>
-              <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-tight">Chat Grupal</div>
+              <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-tight">Empresa completa</div>
             </div>
           </button>
 
-          <div className="h-[1px] bg-slate-100 mx-4 mb-4" />
+          <div className="h-[px] bg-slate-100 mx-4 mb-4" />
 
           {chatPartners.map(user => (
             <button
@@ -247,9 +213,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
                 <div className="font-black text-slate-700 truncate">{user.name}</div>
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">@{user.username}</div>
               </div>
-              {selectedChat?.type === 'private' && selectedChat.id === user.id && (
-                <div className="w-2 h-2 rounded-full bg-[#5851FF] animate-pulse" />
-              )}
             </button>
           ))}
         </div>
@@ -259,41 +222,38 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
       <div className="flex-1 flex flex-col bg-white">
         {selectedChat ? (
           <>
-            {/* Header del Chat */}
             <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-white">
               <div className="flex items-center gap-4">
-                <div className={`w-10 h-10 ${selectedChat.type === 'group' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-[#5851FF]'} rounded-xl flex items-center justify-center font-black text-sm`}>
-                  {selectedChat.type === 'group' ? 'G' : selectedChat.name.charAt(0).toUpperCase()}
+                <div className={`w-10 h-10 ${selectedChat.type === 'group' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-[#5851FF]'} rounded-xl flex items-center justify-center font-black text-sm uppercase`}>
+                  {selectedChat.name.charAt(0)}
                 </div>
                 <div>
                   <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-none mb-1">{selectedChat.name}</h3>
                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                    {selectedChat.type === 'group' ? 'Toda la empresa' : 'Conversación Privada'}
+                    {selectedChat.type === 'group' ? 'Canal Global' : 'Chat Privado'}
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Mensajes */}
             <div className="flex-1 overflow-y-auto p-8 space-y-6 bg-slate-50/30">
-              {isLoading ? (
+              {isLoading && messages.length === 0 ? (
                 <div className="h-full flex items-center justify-center opacity-40">
                   <div className="w-8 h-8 border-3 border-slate-200 border-t-[#5851FF] rounded-full animate-spin"></div>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center p-10 opacity-30">
-                  <div className="w-16 h-16 bg-slate-200 rounded-3xl flex items-center justify-center mb-4">
-                    <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-                  </div>
-                  <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">No hay mensajes previos</p>
+                   <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Sin mensajes</p>
                 </div>
               ) : (
                 messages.map(msg => {
                   const isMine = msg.sender_id === currentUser.id;
                   const senderName = getSenderName(msg.sender_id);
+                  const isTemp = msg.id.toString().startsWith('temp-');
+                  
                   return (
                     <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'} animate-slideIn`}>
-                      <div className={`max-w-[70%] group`}>
+                      <div className={`max-w-[75%] group`}>
                         {selectedChat.type === 'group' && !isMine && (
                           <span className="text-[9px] font-black uppercase text-emerald-600 ml-1 mb-1 block tracking-wider">
                             {senderName}
@@ -303,13 +263,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
                           isMine 
                             ? 'bg-[#5851FF] text-white rounded-tr-none' 
                             : 'bg-white border border-slate-100 text-slate-700 rounded-tl-none'
-                        }`}>
+                        } ${isTemp ? 'opacity-60 italic' : ''}`}>
                           {msg.content}
                         </div>
                         <div className={`text-[9px] font-black uppercase mt-1.5 px-1 tracking-widest ${
                           isMine ? 'text-right text-indigo-400' : 'text-slate-400'
                         }`}>
-                          {formatTime(msg.created_at)}
+                          {isTemp ? 'Enviando...' : formatTime(msg.created_at)}
                         </div>
                       </div>
                     </div>
@@ -319,20 +279,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input */}
             <form onSubmit={sendMessage} className="p-6 border-t border-slate-100 bg-white">
               <div className="relative flex items-center">
                 <input
                   type="text"
-                  placeholder={`Escribir en ${selectedChat.name}...`}
-                  className="w-full pl-6 pr-16 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-50 focus:border-[#5851FF] transition-all placeholder:text-slate-300"
+                  placeholder={`Responder a ${selectedChat.name}...`}
+                  className="w-full pl-6 pr-16 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-50 focus:border-[#5851FF] transition-all"
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
                 />
                 <button
                   type="submit"
                   disabled={!newMessage.trim()}
-                  className={`absolute right-2 p-3 ${selectedChat.type === 'group' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-[#5851FF] hover:bg-[#4a44d4]'} text-white rounded-xl transition-all shadow-lg disabled:opacity-50 disabled:shadow-none`}
+                  className="absolute right-2 p-3 bg-[#5851FF] text-white rounded-xl transition-all shadow-lg disabled:opacity-30 disabled:shadow-none hover:bg-[#4a44d4]"
                 >
                   <svg className="w-5 h-5 transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
                 </button>
