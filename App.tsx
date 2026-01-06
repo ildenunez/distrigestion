@@ -197,10 +197,10 @@ const App: React.FC = () => {
   const handleAddOrder = async (newOrder: Order) => {
     try {
       const timestamp = new Date().toISOString();
-      const { error } = await supabase.from('orders').insert([{
+      const dbOrder = {
         id: newOrder.id,
         status: newOrder.status,
-        service_date: newOrder.serviceDate,
+        service_date: newOrder.serviceDate || null,
         total_amount: newOrder.totalAmount,
         pending_payment: newOrder.pendingPayment,
         zip_code: newOrder.zipCode,
@@ -209,16 +209,19 @@ const App: React.FC = () => {
         notes: newOrder.notes,
         phone1: newOrder.phone1,
         phone2: newOrder.phone2,
-        truck_id: newOrder.truckId,
+        truck_id: newOrder.truckId || null,
         store: newOrder.store,
         updated_at: timestamp,
         updated_by: currentUser?.name || 'Sistema'
-      }]);
+      };
 
+      const { error } = await supabase.from('orders').insert([dbOrder]);
       if (error) throw error;
 
       setOrders(prev => [...prev, { 
-        ...newOrder, 
+        ...newOrder,
+        serviceDate: newOrder.serviceDate || '',
+        truckId: newOrder.truckId || undefined,
         updatedAt: timestamp, 
         updatedBy: currentUser?.name || 'Sistema' 
       }]);
@@ -315,7 +318,7 @@ const App: React.FC = () => {
         const toInsert = newOrders.map(o => ({
           id: o.id,
           status: o.status,
-          service_date: o.serviceDate,
+          service_date: o.serviceDate || null,
           total_amount: o.totalAmount,
           pending_payment: o.pendingPayment,
           zip_code: o.zipCode,
@@ -327,7 +330,7 @@ const App: React.FC = () => {
           phone2: o.phone2,
           store: o.store,
           updated_at: timestamp,
-          updated_by: null // Las importaciones no tienen un "editor" manual asignado inicialmente
+          updated_by: null
         }));
 
         const { error } = await supabase.from('orders').upsert(toInsert);
@@ -456,8 +459,8 @@ const App: React.FC = () => {
       const editorName = currentUser?.name || 'Sistema';
       
       const { error } = await supabase.from('orders').update({
-        truck_id: destTruckId,
-        service_date: targetDate,
+        truck_id: destTruckId || null,
+        service_date: targetDate || null,
         updated_at: timestamp,
         updated_by: editorName
       }).in('id', ids);
@@ -466,8 +469,8 @@ const App: React.FC = () => {
 
       setOrders(prev => prev.map(o => ids.includes(o.id) ? { 
         ...o, 
-        truckId: destTruckId, 
-        serviceDate: targetDate, 
+        truckId: destTruckId || undefined, 
+        serviceDate: targetDate || '', 
         updatedAt: timestamp,
         updatedBy: editorName 
       } : o));
@@ -558,9 +561,10 @@ const App: React.FC = () => {
     const timestamp = new Date().toISOString();
     const editorName = currentUser?.name || 'Sistema';
     
-    const { error } = await supabase.from('orders').update({
+    // Normalizar para BD (null si está vacío)
+    const dbUpdate = {
       status: updatedOrder.status,
-      service_date: updatedOrder.serviceDate,
+      service_date: updatedOrder.serviceDate || null,
       total_amount: updatedOrder.totalAmount,
       pending_payment: updatedOrder.pendingPayment,
       zip_code: updatedOrder.zipCode,
@@ -569,15 +573,19 @@ const App: React.FC = () => {
       notes: updatedOrder.notes,
       phone1: updatedOrder.phone1,
       phone2: updatedOrder.phone2,
-      truck_id: updatedOrder.truckId,
+      truck_id: updatedOrder.truckId || null,
       store: updatedOrder.store,
       updated_at: timestamp,
       updated_by: editorName
-    }).eq('id', updatedOrder.id);
+    };
+
+    const { error } = await supabase.from('orders').update(dbUpdate).eq('id', updatedOrder.id);
 
     if (!error) {
       setOrders(prev => prev.map(o => o.id === updatedOrder.id ? { 
-        ...updatedOrder, 
+        ...updatedOrder,
+        serviceDate: updatedOrder.serviceDate || '',
+        truckId: updatedOrder.truckId || undefined,
         updatedAt: timestamp,
         updatedBy: editorName 
       } : o));
@@ -608,7 +616,7 @@ const App: React.FC = () => {
             <div className="hidden md:flex gap-1.5 p-1.5 bg-slate-100 rounded-2xl items-center">
               {[
                 { id: 'orders', label: 'Pedidos' },
-                { id: 'trucks', label: 'Flota' },
+                { id: 'trucks', label: 'Camiones' },
                 { id: 'loads', label: 'Cargas' },
                 { id: 'recent', label: 'Recientes' },
                 { id: 'chat', label: 'Chat', hasBadge: hasUnreadMessages }
@@ -703,10 +711,9 @@ const App: React.FC = () => {
                         <option value="lt">Menor que</option>
                       </select>
                       <div className="flex-1 relative">
-                        <input type="date" className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-black outline-none" value={serviceDateFilter} onChange={(e) => setServiceDateFilter(e.target.value)} />
                         <button 
                           onClick={() => setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc')}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 p-2 hover:bg-slate-200 rounded-lg transition-all text-[#5851FF]"
+                          className="absolute left-3 top-1/2 -translate-y-1/2 p-2 hover:bg-slate-200 rounded-lg transition-all text-[#5851FF] z-10"
                           title={sortDirection === 'desc' ? "Ordenando por: Más reciente" : "Ordenando por: Más viejo"}
                         >
                           {sortDirection === 'desc' ? (
@@ -715,6 +722,12 @@ const App: React.FC = () => {
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4" /></svg>
                           )}
                         </button>
+                        <input 
+                          type="date" 
+                          className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-black outline-none focus:border-[#5851FF] transition-all" 
+                          value={serviceDateFilter} 
+                          onChange={(e) => setServiceDateFilter(e.target.value)} 
+                        />
                       </div>
                     </div>
                     <div className="xl:col-span-6 flex flex-wrap gap-2 justify-end">
