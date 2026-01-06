@@ -1,0 +1,5 @@
+{
+  "name": "DistriGestión v1.0",
+  "description": "Una aplicación avanzada de gestión de pedidos con importación de CSV, análisis inteligente mediante Gemini AI y paneles de control interactivos.",
+  "requestFramePermissions": []
+}
