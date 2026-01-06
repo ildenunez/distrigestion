@@ -1,17 +1,17 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Order, OrderStatus, OrderStats, Truck, AppUser, UserRole, ChatMessage, GroupMessage } from './types';
-import { parseCSV } from './utils/csvParser';
-import { supabase } from './lib/supabase';
-import DashboardStats from './components/DashboardStats';
-import OrderTable from './components/OrderTable';
-import OrderEditModal from './components/OrderEditModal';
-import TruckManager from './components/TruckManager';
-import LoadsView from './components/LoadsView';
-import RecentEditsView from './components/RecentEditsView';
-import LoginPage from './components/LoginPage';
-import UserManager from './components/UserManager';
-import ChatInterface from './components/ChatInterface';
+import { Order, OrderStatus, OrderStats, Truck, AppUser, UserRole, ChatMessage, GroupMessage } from './types.ts';
+import { parseCSV } from './utils/csvParser.ts';
+import { supabase } from './lib/supabase.ts';
+import DashboardStats from './components/DashboardStats.tsx';
+import OrderTable from './components/OrderTable.tsx';
+import OrderEditModal from './components/OrderEditModal.tsx';
+import TruckManager from './components/TruckManager.tsx';
+import LoadsView from './components/LoadsView.tsx';
+import RecentEditsView from './components/RecentEditsView.tsx';
+import LoginPage from './components/LoginPage.tsx';
+import UserManager from './components/UserManager.tsx';
+import ChatInterface from './components/ChatInterface.tsx';
 
 type AppTab = 'orders' | 'trucks' | 'loads' | 'recent' | 'users' | 'chat';
 type SortField = 'serviceDate' | 'totalAmount' | 'pendingPayment' | 'id';
@@ -122,11 +122,9 @@ const App: React.FC = () => {
     fetchData();
   }, []);
 
-  // Suscripción Global a Mensajes de Chat para Notificaciones
   useEffect(() => {
     if (!currentUser) return;
 
-    // Suscripción a mensajes privados
     const chatChannel = supabase
       .channel('global_chat_notifs')
       .on(
@@ -148,7 +146,6 @@ const App: React.FC = () => {
       )
       .subscribe();
 
-    // Suscripción a mensajes grupales
     const groupChannel = supabase
       .channel('global_group_notifs')
       .on(
@@ -156,7 +153,6 @@ const App: React.FC = () => {
         { event: 'INSERT', schema: 'public', table: 'group_messages' },
         (payload) => {
           const newMsg = payload.new as GroupMessage;
-          // Solo notificar si no fui yo quien lo envió
           if (newMsg.sender_id !== currentUser.id) {
             const sender = users.find(u => u.id === newMsg.sender_id);
             setNotification({
@@ -629,7 +625,6 @@ const App: React.FC = () => {
 
       <OrderEditModal isOpen={isModalOpen} order={selectedOrder} trucks={trucks} onClose={() => setIsModalOpen(false)} onSave={saveEditedOrder} />
 
-      {/* Popups de Notificación Mejorados para Chat */}
       {notification && (
         <div className={`fixed bottom-10 right-8 px-8 py-5 rounded-[2rem] shadow-2xl border flex flex-col gap-1 animate-slideIn z-[100] max-w-sm ${
           notification.type === 'error' ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-900 border-slate-800 text-white'

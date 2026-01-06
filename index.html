@@ -16,6 +16,10 @@
         .animate-slideIn { animation: slideIn 0.4s ease-out; }
         .animate-scaleIn { animation: scaleIn 0.2s ease-out; }
     </style>
+    <script>
+      // Shim para compatibilidad con process.env en el navegador
+      window.process = { env: { API_KEY: '' } };
+    </script>
 <script type="importmap">
 {
   "imports": {
@@ -30,5 +34,6 @@
 </head>
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
