@@ -1,6 +1,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { Order, OrderStatus, Truck } from '../types';
+import { getProvinceFromZip } from '../utils/provinceHelper';
 
 interface LoadsViewProps {
   orders: Order[];
@@ -10,6 +11,7 @@ interface LoadsViewProps {
   selectedDate: string;
   onFilterChange: (truckId: string, date: string) => void;
   onTransferLoads: (sourceTruckId: string, destTruckId: string, sourceDate: string, targetDate: string) => void;
+  onAddOrder?: (newOrder: Order) => void;
 }
 
 const LoadsView: React.FC<LoadsViewProps> = ({ 
@@ -19,11 +21,16 @@ const LoadsView: React.FC<LoadsViewProps> = ({
   selectedTruckId, 
   selectedDate, 
   onFilterChange,
-  onTransferLoads
+  onTransferLoads,
+  onAddOrder
 }) => {
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [transferDestTruckId, setTransferDestTruckId] = useState('');
   const [transferTargetDate, setTransferTargetDate] = useState(selectedDate);
+  
+  // Estado para el modal de nueva incidencia
+  const [incidentModal, setIncidentModal] = useState<{ isOpen: boolean, truckId: string }>({ isOpen: false, truckId: '' });
+  const [newIncidentData, setNewIncidentData] = useState({ number: '', zipCode: '', city: '', notes: '' });
 
   const sortedTrucks = useMemo(() => {
     return [...trucks].sort((a, b) => 
@@ -31,7 +38,7 @@ const LoadsView: React.FC<LoadsViewProps> = ({
     );
   }, [trucks]);
 
-  const truckLoads = useMemo(() => {
+  const truckLoadsMap = useMemo(() => {
     const map: Record<string, Order[]> = {};
     const scheduledOrders = orders.filter(o => o.status === OrderStatus.SCHEDULED && o.serviceDate === selectedDate);
     
@@ -44,17 +51,29 @@ const LoadsView: React.FC<LoadsViewProps> = ({
     return map;
   }, [orders, selectedDate]);
 
-  const selectedTruck = useMemo(() => trucks.find(t => t.id === selectedTruckId), [trucks, selectedTruckId]);
-  const currentLoad = truckLoads[selectedTruckId] || [];
+  // Cálculos de Estadísticas
+  const stats = useMemo(() => {
+    const allScheduled = orders.filter(o => o.status === OrderStatus.SCHEDULED && o.serviceDate === selectedDate);
+    const regularCount = allScheduled.filter(o => !o.notes.includes('[INCIDENCIA]')).length;
+    const incidentCount = allScheduled.filter(o => o.notes.includes('[INCIDENCIA]')).length;
+    const totalDeliveries = allScheduled.length;
+    const totalAmount = allScheduled.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+    
+    const trucksWithLoad = trucks.filter(t => (truckLoadsMap[t.id]?.length || 0) > 0).length;
+    const freeTrucks = trucks.length - trucksWithLoad;
 
-  const formatDate = (dateStr: string) => {
-    if (!dateStr) return "---";
-    const parts = dateStr.split('-');
-    if (parts.length === 3) {
-      return `${parts[2]}/${parts[1]}/${parts[0]}`;
-    }
-    return dateStr;
-  };
+    return {
+      used: trucksWithLoad,
+      free: freeTrucks,
+      regular: regularCount,
+      incidents: incidentCount,
+      total: totalDeliveries,
+      amount: totalAmount
+    };
+  }, [orders, trucks, truckLoadsMap, selectedDate]);
+
+  const selectedTruck = useMemo(() => trucks.find(t => t.id === selectedTruckId), [trucks, selectedTruckId]);
+  const currentLoad = truckLoadsMap[selectedTruckId] || [];
 
   const handleConfirmTransfer = () => {
     if (!transferDestTruckId || !transferTargetDate) return;
@@ -62,105 +81,208 @@ const LoadsView: React.FC<LoadsViewProps> = ({
     setIsTransferModalOpen(false);
   };
 
+  const openIncidentModal = (truckId: string) => {
+    setIncidentModal({ isOpen: true, truckId });
+    setNewIncidentData({ number: '', zipCode: '', city: '', notes: '' });
+  };
+
+  const handleZipChange = async (zip: string) => {
+    setNewIncidentData(prev => ({ ...prev, zipCode: zip }));
+    
+    if (zip.length === 5) {
+      try {
+        const response = await fetch(`https://api.zippopotam.us/es/${zip}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.places && data.places.length > 0) {
+            const locality = data.places[0]['place name'];
+            setNewIncidentData(prev => ({ ...prev, city: locality }));
+          }
+        }
+      } catch (error) {
+        // Si falla la API, intentamos al menos la provincia como fallback
+        const province = getProvinceFromZip(zip);
+        setNewIncidentData(prev => ({ ...prev, city: province }));
+      }
+    }
+  };
+
+  const handleSaveIncident = () => {
+    if (!newIncidentData.city || !newIncidentData.number || !onAddOrder) return;
+    
+    const incidentOrder: Order = {
+      id: `INC-${newIncidentData.number}`,
+      status: OrderStatus.SCHEDULED,
+      serviceDate: selectedDate,
+      totalAmount: 0,
+      pendingPayment: 0,
+      zipCode: newIncidentData.zipCode,
+      city: newIncidentData.city,
+      province: getProvinceFromZip(newIncidentData.zipCode),
+      address: `INCIDENCIA: ${newIncidentData.city}`,
+      // Se guarda la nota del usuario o el tag de incidencia si está vacío
+      notes: newIncidentData.notes ? `[INCIDENCIA] ${newIncidentData.notes}` : `[INCIDENCIA] ${newIncidentData.number}`,
+      phone1: '---',
+      phone2: '',
+      truckId: incidentModal.truckId
+    };
+
+    onAddOrder(incidentOrder);
+    setIncidentModal({ isOpen: false, truckId: '' });
+  };
+
   return (
     <div className="space-y-8 animate-fadeIn">
-      {/* Selector de Fecha */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-[#5851FF]">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
+      {/* Selector de Fecha y Estadísticas */}
+      <div className="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-8">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8">
+          <div className="flex items-center gap-6">
+            <div className="w-16 h-16 bg-[#5851FF] rounded-[1.2rem] flex items-center justify-center text-white shadow-xl shadow-indigo-100">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-2xl font-black text-slate-800 tracking-tight">Hoja de Cargas Diaria</h2>
+              <div className="flex items-center gap-3 mt-1">
+                <p className="text-xs text-slate-400 font-black uppercase tracking-widest">Planificación del día:</p>
+                <input 
+                  type="date"
+                  className="px-4 py-1.5 bg-indigo-50 border border-indigo-100 rounded-xl text-xs font-black text-indigo-600 outline-none focus:ring-4 focus:ring-indigo-100 transition-all cursor-pointer"
+                  value={selectedDate}
+                  onChange={e => onFilterChange(selectedTruckId, e.target.value)}
+                />
+              </div>
+            </div>
           </div>
-          <div>
-            <h2 className="text-lg font-black text-slate-800">Hoja de Cargas Diaria</h2>
-            <p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Planificación para el {formatDate(selectedDate)}</p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] font-black uppercase text-slate-400">Cambiar Fecha:</span>
-          <input 
-            type="date"
-            className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-[#5851FF] transition-all cursor-pointer"
-            value={selectedDate}
-            onChange={e => onFilterChange(selectedTruckId, e.target.value)}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl">
+              <span className="block text-[9px] font-black uppercase text-slate-400 tracking-widest leading-none mb-1.5">Camiones Usados</span>
+              <span className="text-xl font-black text-indigo-600 leading-none">{stats.used} <span className="text-[10px] text-slate-400">/ {trucks.length}</span></span>
+            </div>
+            <div className="bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl">
+              <span className="block text-[9px] font-black uppercase text-slate-400 tracking-widest leading-none mb-1.5">Libres</span>
+              <span className="text-xl font-black text-emerald-600 leading-none">{stats.free}</span>
+            </div>
+            <div className="bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl">
+              <span className="block text-[9px] font-black uppercase text-slate-400 tracking-widest leading-none mb-1.5">Pedidos</span>
+              <span className="text-xl font-black text-slate-700 leading-none">{stats.regular}</span>
+            </div>
+            <div className="bg-rose-50 border border-rose-100 px-5 py-3 rounded-2xl">
+              <span className="block text-[9px] font-black uppercase text-rose-400 tracking-widest leading-none mb-1.5">Nº Incidencias</span>
+              <span className="text-xl font-black text-rose-600 leading-none">{stats.incidents}</span>
+            </div>
+            <div className="bg-slate-900 border border-slate-800 px-5 py-3 rounded-2xl shadow-lg">
+              <span className="block text-[9px] font-black uppercase text-slate-400 tracking-widest leading-none mb-1.5">Total Envíos</span>
+              <span className="text-xl font-black text-white leading-none">{stats.total}</span>
+            </div>
+            <div className="bg-[#5851FF] border border-indigo-400 px-5 py-3 rounded-2xl shadow-lg shadow-indigo-100">
+              <span className="block text-[9px] font-black uppercase text-white/70 tracking-widest leading-none mb-1.5">Importe Total</span>
+              <span className="text-xl font-black text-white leading-none">{stats.amount.toLocaleString('es-ES', { minimumFractionDigits: 2 })}€</span>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Grid de Tarjetas de Camiones */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {sortedTrucks.map(truck => {
-          const load = truckLoads[truck.id] || [];
+          const load = truckLoadsMap[truck.id] || [];
           const totalLoadValue = load.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-          const totalPending = load.reduce((sum, o) => sum + (o.pendingPayment || 0), 0);
           const isSelected = selectedTruckId === truck.id;
+          
+          // Filtrar pedidos normales vs incidencias para visualización en tarjeta
+          const regularOrders = load.filter(o => !o.notes.includes('[INCIDENCIA]'));
+          const truckIncidents = load.filter(o => o.notes.includes('[INCIDENCIA]'));
 
           return (
             <div 
               key={truck.id}
               onClick={() => onFilterChange(truck.id, selectedDate)}
-              className={`bg-white rounded-2xl border-2 transition-all cursor-pointer flex flex-col h-full group ${
-                isSelected ? 'border-[#5851FF] shadow-xl shadow-indigo-100' : 'border-slate-100 hover:border-slate-300 hover:shadow-md'
+              className={`bg-white rounded-[2rem] border-2 transition-all cursor-pointer flex flex-col h-full group ${
+                isSelected ? 'border-[#5851FF] shadow-2xl shadow-indigo-100' : 'border-slate-100 hover:border-slate-300 hover:shadow-lg'
               }`}
             >
               {/* Cabecera Tarjeta */}
-              <div className={`p-5 border-b flex justify-between items-start ${isSelected ? 'bg-indigo-50/30 border-indigo-100' : 'border-slate-50'}`}>
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black text-sm ${isSelected ? 'bg-[#5851FF] text-white' : 'bg-slate-100 text-slate-500'}`}>
+              <div className={`p-6 border-b flex justify-between items-start ${isSelected ? 'bg-indigo-50/30 border-indigo-100' : 'border-slate-50'}`}>
+                <div className="flex items-center gap-4">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-base shadow-sm ${isSelected ? 'bg-[#5851FF] text-white shadow-indigo-200' : 'bg-slate-100 text-slate-500'}`}>
                     {truck.number}
                   </div>
                   <div>
-                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-none mb-1">{truck.name}</h3>
-                    <p className="text-[10px] text-slate-400 font-bold">{truck.phone || 'Sin contacto'}</p>
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-none mb-1.5">{truck.name}</h3>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{truck.phone || 'Sin contacto'}</p>
                   </div>
                 </div>
-                {load.length > 0 && (
-                  <span className="bg-indigo-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full">
-                    {load.length}
-                  </span>
-                )}
+                <div className="flex flex-col items-end gap-2">
+                  {load.length > 0 && (
+                    <span className="bg-[#5851FF] text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg shadow-indigo-200">
+                      {load.length}
+                    </span>
+                  )}
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); openIncidentModal(truck.id); }}
+                    className="p-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition-colors shadow-sm"
+                    title="Añadir Incidencia"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                  </button>
+                </div>
               </div>
 
               {/* Lista de Pedidos en Tarjeta */}
-              <div className="flex-1 p-4 space-y-2.5 overflow-hidden">
+              <div className="flex-1 p-6 space-y-3 overflow-hidden">
+                {/* Mostrar Incidencias con estilo rosa destacado */}
+                {truckIncidents.length > 0 && (
+                  <div className="mb-4 space-y-1.5">
+                    {truckIncidents.map((inc) => (
+                      <div key={inc.id} className="bg-rose-50 border border-rose-100 px-3 py-2 rounded-xl flex items-center gap-2">
+                        <div className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                        <span className="text-[10px] font-black text-rose-700 uppercase leading-none">
+                          {inc.id.replace('INC-', '')} - {inc.city}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {load.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center py-10 opacity-40">
-                    <svg className="w-8 h-8 text-slate-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" /></svg>
-                    <p className="text-[10px] font-black uppercase text-slate-400">Sin Carga</p>
+                  <div className="h-full flex flex-col items-center justify-center py-10 opacity-30">
+                    <svg className="w-10 h-10 text-slate-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" /></svg>
+                    <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em]">Sin Carga Asignada</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {load.slice(0, 8).map(order => (
+                    {regularOrders.slice(0, 8).map(order => (
                       <div 
                         key={order.id}
                         onClick={(e) => { e.stopPropagation(); onSelectOrder(order); }}
-                        className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-100 rounded-xl hover:bg-white hover:border-[#5851FF]/30 transition-all group/item"
+                        className="flex items-center justify-between p-3 bg-slate-50 border border-slate-100 rounded-2xl hover:bg-white hover:border-[#5851FF]/40 transition-all group/item shadow-sm"
                       >
                         <div className="flex flex-col min-w-0 flex-1">
-                          <span className="text-[9px] font-black text-[#5851FF] leading-none uppercase tracking-tighter">{order.id}</span>
-                          <span className="text-[10px] text-slate-700 font-black truncate uppercase mt-0.5">{order.city}</span>
+                          <span className="text-[10px] font-black text-[#5851FF] leading-none uppercase tracking-tighter">{order.id}</span>
+                          <span className="text-[11px] text-slate-700 font-black truncate uppercase mt-1">{order.city}</span>
                         </div>
                         <div className="flex flex-col items-end ml-3 shrink-0">
-                          <span className="text-[10px] font-black text-slate-600 group-hover/item:text-[#5851FF] transition-colors leading-none">
+                          <span className="text-[10px] font-black text-slate-500 group-hover/item:text-[#5851FF] transition-colors leading-none">
                             {order.phone1 || '---'}
                           </span>
                         </div>
                       </div>
                     ))}
-                    {load.length > 8 && (
-                      <p className="text-center text-[9px] font-black text-slate-300 uppercase py-1">+{load.length - 8} pedidos adicionales</p>
+                    {regularOrders.length > 8 && (
+                      <p className="text-center text-[10px] font-black text-slate-300 uppercase py-2 tracking-widest">+ {regularOrders.length - 8} pedidos más</p>
                     )}
                   </div>
                 )}
               </div>
 
               {/* Pie Tarjeta */}
-              <div className={`p-4 mt-auto border-t flex flex-col gap-1 ${isSelected ? 'bg-indigo-50/50 border-indigo-100' : 'bg-slate-50/50 border-slate-50'}`}>
+              <div className={`p-6 mt-auto border-t flex flex-col gap-1 rounded-b-[2rem] ${isSelected ? 'bg-indigo-50/50 border-indigo-100' : 'bg-slate-50/50 border-slate-50'}`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Total Carga:</span>
-                  <span className={`text-sm font-black ${totalLoadValue > 0 ? 'text-[#5851FF]' : 'text-slate-400'}`}>
+                  <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Valor de Carga:</span>
+                  <span className={`text-base font-black ${totalLoadValue > 0 ? 'text-slate-800' : 'text-slate-400'}`}>
                     {totalLoadValue.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
                   </span>
                 </div>
@@ -170,13 +292,93 @@ const LoadsView: React.FC<LoadsViewProps> = ({
         })}
       </div>
 
+      {/* Modal Nueva Incidencia */}
+      {incidentModal.isOpen && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm animate-fadeIn" onClick={() => setIncidentModal({ isOpen: false, truckId: '' })} />
+          <div className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden animate-scaleIn">
+            <div className="p-8">
+              <div className="w-16 h-16 bg-rose-50 rounded-[1.4rem] flex items-center justify-center text-rose-500 mb-6 mx-auto">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+              </div>
+              <h3 className="text-xl font-black text-center text-slate-800 tracking-tight mb-6 uppercase">Registrar Incidencia</h3>
+              
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-1">Número de Incidencia</label>
+                  <input 
+                    type="text" 
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3 text-sm font-bold text-slate-700 outline-none focus:border-[#5851FF] transition-all"
+                    placeholder="Ej: INC-452"
+                    autoFocus
+                    value={newIncidentData.number}
+                    onChange={e => setNewIncidentData({...newIncidentData, number: e.target.value})}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-1">Código Postal</label>
+                    <input 
+                      type="text" 
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3 text-sm font-bold text-slate-700 outline-none focus:border-[#5851FF] transition-all"
+                      placeholder="Ej: 28001"
+                      value={newIncidentData.zipCode}
+                      onChange={e => handleZipChange(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-1">Población</label>
+                    <input 
+                      type="text" 
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3 text-sm font-bold text-slate-700 outline-none focus:border-[#5851FF] transition-all"
+                      placeholder="Localidad"
+                      value={newIncidentData.city}
+                      onChange={e => setNewIncidentData({...newIncidentData, city: e.target.value})}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-1">Notas de Incidencia</label>
+                  <textarea 
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3 text-sm font-bold text-slate-700 outline-none focus:border-[#5851FF] transition-all resize-none"
+                    rows={3}
+                    placeholder="Detalles adicionales..."
+                    value={newIncidentData.notes}
+                    onChange={e => setNewIncidentData({...newIncidentData, notes: e.target.value})}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-8">
+                <button 
+                  onClick={() => setIncidentModal({ isOpen: false, truckId: '' })}
+                  className="flex-1 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-400 hover:bg-slate-50 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleSaveIncident}
+                  disabled={!newIncidentData.city || !newIncidentData.number}
+                  className="flex-1 px-4 py-3 bg-rose-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-rose-100 hover:bg-rose-600 transition-all disabled:opacity-30"
+                >
+                  Grabar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Detalle del Camión Seleccionado (Tabla) */}
-      {selectedTruckId && currentLoad.length > 0 && (
-        <div className="animate-slideIn mt-10">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3 flex-1">
-              <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">Detalle de Hoja de Ruta ({selectedTruck?.number})</h3>
-              <div className="h-[1px] flex-1 bg-slate-200"></div>
+      {selectedTruckId && (
+        <div className="animate-slideIn mt-12">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4 flex-1">
+              <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-lg">
+                {selectedTruck?.number || '---'}
+              </div>
+              <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Hoja de Ruta Detallada</h3>
+              <div className="h-[2px] flex-1 bg-slate-100 rounded-full"></div>
             </div>
             
             <button 
@@ -185,61 +387,77 @@ const LoadsView: React.FC<LoadsViewProps> = ({
                 setTransferTargetDate(selectedDate);
                 setIsTransferModalOpen(true);
               }}
-              className="ml-6 px-5 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:bg-black transition-all shadow-lg active:scale-95"
+              className="ml-8 px-6 py-3 bg-slate-900 text-white rounded-[1rem] text-[11px] font-black uppercase tracking-[0.15em] flex items-center gap-3 hover:bg-black transition-all shadow-xl shadow-slate-200 active:scale-95"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
-              Traspasar Pedidos
+              Traspasar Carga
             </button>
           </div>
           
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50/50 border-b border-slate-100">
-                  <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest">Pedido</th>
-                  <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest">Destino</th>
-                  <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest">Dirección</th>
-                  <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest">Teléfonos</th>
-                  <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest min-w-[300px]">Notas</th>
-                  <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest text-right">Valor</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {currentLoad.map(order => (
-                  <tr 
-                    key={order.id} 
-                    onClick={() => onSelectOrder(order)}
-                    className="hover:bg-slate-50/50 transition-colors cursor-pointer group"
-                  >
-                    <td className="px-6 py-4">
-                      <span className="text-[13px] font-black text-[#5851FF] group-hover:underline uppercase">{order.id}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <p className="text-sm font-bold text-slate-700 uppercase tracking-tight">{order.city}</p>
-                    </td>
-                    <td className="px-6 py-4">
-                      <p className="text-[11px] text-slate-500 line-clamp-2">{order.address}</p>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-col">
-                        <span className="text-[11px] font-bold text-slate-700">{order.phone1 || '---'}</span>
-                        {order.phone2 && <span className="text-[10px] text-slate-400">{order.phone2}</span>}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="whitespace-normal break-words italic text-[11px] text-slate-600 leading-relaxed">
-                        {order.notes || <span className="text-slate-300 italic">Sin notas</span>}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-right whitespace-nowrap">
-                      <p className="text-sm font-bold text-slate-700">
-                        {order.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
-                      </p>
-                    </td>
+          <div className="bg-white rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/50 border-b border-slate-100">
+                    <th className="px-8 py-5 text-[11px] font-black uppercase text-slate-400 tracking-widest">Nº Pedido</th>
+                    <th className="px-8 py-5 text-[11px] font-black uppercase text-slate-400 tracking-widest">Localidad</th>
+                    <th className="px-8 py-5 text-[11px] font-black uppercase text-slate-400 tracking-widest">Dirección de Entrega</th>
+                    <th className="px-8 py-5 text-[11px] font-black uppercase text-slate-400 tracking-widest">Contactos</th>
+                    <th className="px-8 py-5 text-[11px] font-black uppercase text-slate-400 tracking-widest min-w-[300px]">Notas de Servicio</th>
+                    <th className="px-8 py-5 text-[11px] font-black uppercase text-slate-400 tracking-widest text-right">Valor</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {currentLoad.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-8 py-20 text-center">
+                        <div className="flex flex-col items-center opacity-30">
+                          <svg className="w-12 h-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                          <p className="text-sm font-black uppercase tracking-widest text-slate-400">No hay pedidos asignados para este día</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    currentLoad.map(order => (
+                      <tr 
+                        key={order.id} 
+                        onClick={() => onSelectOrder(order)}
+                        className={`hover:bg-slate-50 transition-colors cursor-pointer group ${order.notes.includes('[INCIDENCIA]') ? 'bg-rose-50/30' : ''}`}
+                      >
+                        <td className="px-8 py-5">
+                          <span className={`text-[14px] font-black ${order.notes.includes('[INCIDENCIA]') ? 'text-rose-600' : 'text-[#5851FF]'} group-hover:underline uppercase tracking-tight`}>
+                            {order.id}
+                          </span>
+                        </td>
+                        <td className="px-8 py-5">
+                          <p className="text-[13px] font-black text-slate-800 uppercase tracking-tight">{order.city}</p>
+                          <p className="text-[10px] text-slate-400 font-bold">{order.zipCode}</p>
+                        </td>
+                        <td className="px-8 py-5">
+                          <p className="text-[12px] font-medium text-slate-600 line-clamp-2 leading-relaxed">{order.address}</p>
+                        </td>
+                        <td className="px-8 py-5">
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[12px] font-black text-slate-700 leading-none">{order.phone1 || '---'}</span>
+                            {order.phone2 && <span className="text-[11px] text-slate-400 font-bold">{order.phone2}</span>}
+                          </div>
+                        </td>
+                        <td className="px-8 py-5">
+                          <div className={`p-3 rounded-xl border italic text-[11px] leading-relaxed min-h-[50px] ${order.notes.includes('[INCIDENCIA]') ? 'bg-rose-100/50 border-rose-200 text-rose-800' : 'bg-slate-50/50 border-slate-100 text-slate-600'}`}>
+                            {order.notes || <span className="text-slate-300">Sin notas de planificación</span>}
+                          </div>
+                        </td>
+                        <td className="px-8 py-5 text-right whitespace-nowrap">
+                          <p className="text-[15px] font-black text-slate-800">
+                            {order.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                          </p>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -247,36 +465,38 @@ const LoadsView: React.FC<LoadsViewProps> = ({
       {/* Modal de Traspaso */}
       {isTransferModalOpen && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
-          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsTransferModalOpen(false)} />
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl relative z-10 overflow-hidden animate-scaleIn">
-            <div className="p-8">
-              <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-900 mb-6">
-                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm animate-fadeIn" onClick={() => setIsTransferModalOpen(false)} />
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden animate-scaleIn">
+            <div className="p-10">
+              <div className="w-20 h-20 bg-indigo-50 rounded-[1.8rem] flex items-center justify-center text-[#5851FF] mb-8 shadow-inner">
+                <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
               </div>
               
-              <h3 className="text-xl font-black text-slate-800 tracking-tight mb-2">Traspasar Cargas Masivas</h3>
-              <p className="text-sm text-slate-500 font-bold mb-8">Vas a mover {currentLoad.length} pedidos del camión <span className="text-indigo-600">[{selectedTruck?.number}]</span></p>
+              <h3 className="text-2xl font-black text-slate-800 tracking-tight mb-3">Traspasar Cargas Masivas</h3>
+              <p className="text-sm text-slate-500 font-bold mb-10 leading-relaxed">
+                Vas a mover <span className="text-indigo-600 font-black">{currentLoad.length} pedidos</span> del camión <span className="text-slate-900 font-black">[{selectedTruck?.number}]</span> a un nuevo destino.
+              </p>
 
-              <div className="space-y-6">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Camión Destino</label>
+              <div className="space-y-8">
+                <div className="space-y-3">
+                  <label className="text-[11px] font-black uppercase text-slate-400 tracking-[0.2em] ml-1">Camión de Destino</label>
                   <select 
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-black outline-none focus:ring-4 focus:ring-indigo-50 focus:border-indigo-400 transition-all"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-black text-slate-700 outline-none focus:ring-4 focus:ring-indigo-100 focus:border-[#5851FF] transition-all appearance-none cursor-pointer"
                     value={transferDestTruckId}
                     onChange={e => setTransferDestTruckId(e.target.value)}
                   >
-                    <option value="">Seleccionar Camión...</option>
+                    <option value="">Seleccionar unidad...</option>
                     {sortedTrucks.filter(t => t.id !== selectedTruckId).map(t => (
-                      <option key={t.id} value={t.id}>[{t.number}] {t.name}</option>
+                      <option key={t.id} value={t.id}>[{t.number}] - Conductor: {t.name}</option>
                     ))}
                   </select>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Fecha de Destino</label>
+                <div className="space-y-3">
+                  <label className="text-[11px] font-black uppercase text-slate-400 tracking-widest tracking-[0.2em] ml-1">Nueva Fecha de Servicio</label>
                   <input 
-                    type="date"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-black outline-none focus:ring-4 focus:ring-indigo-50 focus:border-indigo-400 transition-all cursor-pointer"
+                    type="date" 
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-black text-slate-700 outline-none focus:ring-4 focus:ring-indigo-100 focus:border-[#5851FF] transition-all cursor-pointer"
                     value={transferTargetDate}
                     onChange={e => setTransferTargetDate(e.target.value)}
                   />
@@ -284,19 +504,19 @@ const LoadsView: React.FC<LoadsViewProps> = ({
               </div>
             </div>
 
-            <div className="bg-slate-50 px-8 py-6 flex gap-3">
+            <div className="bg-slate-50 px-10 py-8 flex gap-4">
               <button 
                 onClick={() => setIsTransferModalOpen(false)}
-                className="flex-1 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-slate-500 hover:bg-slate-200 transition-all"
+                className="flex-1 px-6 py-4 rounded-2xl text-[11px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-200 transition-all active:scale-95"
               >
                 Cancelar
               </button>
               <button 
                 onClick={handleConfirmTransfer}
                 disabled={!transferDestTruckId || !transferTargetDate}
-                className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-2 px-10 py-4 bg-[#5851FF] text-white rounded-2xl text-[11px] font-black uppercase tracking-[0.15em] shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
               >
-                Confirmar
+                Confirmar Traspaso
               </button>
             </div>
           </div>

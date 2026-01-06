@@ -16,6 +16,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
   });
   
   const [messages, setMessages] = useState<(ChatMessage | GroupMessage)[]>([]);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -24,11 +25,56 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
     return users.filter(u => u.id !== currentUser.id);
   }, [users, currentUser]);
 
-  // SUSCRIPCIÓN EN TIEMPO REAL LOCAL (Solo para actualizar la vista activa)
+  // CARGA INICIAL DE CONTEOS NO LEÍDOS
+  useEffect(() => {
+    const fetchUnreads = async () => {
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('sender_id')
+        .eq('receiver_id', currentUser.id)
+        .eq('is_read', false);
+      
+      if (!error && data) {
+        const counts: Record<string, number> = {};
+        data.forEach(m => {
+          counts[m.sender_id] = (counts[m.sender_id] || 0) + 1;
+        });
+        setUnreadCounts(counts);
+      }
+    };
+    fetchUnreads();
+  }, [currentUser]);
+
+  // SUSCRIPCIÓN GLOBAL PARA ACTUALIZAR CHIVATOS EN LA SIDEBAR
+  useEffect(() => {
+    const channel = supabase.channel('global-chat-monitor')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+        (payload) => {
+          const newMsg = payload.new as ChatMessage;
+          if (newMsg.receiver_id === currentUser.id && newMsg.sender_id !== currentUser.id) {
+            // Si el chat del remitente NO está abierto, incrementamos el contador
+            if (selectedChat?.type !== 'private' || selectedChat.id !== newMsg.sender_id) {
+              setUnreadCounts(prev => ({
+                ...prev,
+                [newMsg.sender_id]: (prev[newMsg.sender_id] || 0) + 1
+              }));
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser, selectedChat]);
+
+  // SUSCRIPCIÓN EN TIEMPO REAL LOCAL (Para actualizar la vista activa)
   useEffect(() => {
     if (!selectedChat) return;
 
-    // Escuchar específicamente lo que nos interesa para el chat abierto
     const channel = supabase.channel(`active-chat-${selectedChat.id}`);
 
     if (selectedChat.type === 'private') {
@@ -46,6 +92,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
               if (prev.some(m => m.id === newMsg.id)) return prev;
               return [...prev, newMsg];
             });
+            // Si es un mensaje que recibo estando en el chat, marcar como leído
+            if (newMsg.receiver_id === currentUser.id) {
+              markAsRead(selectedChat.id);
+            }
           }
         }
       ).subscribe();
@@ -67,6 +117,27 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
       supabase.removeChannel(channel);
     };
   }, [currentUser, selectedChat]);
+
+  // MARCAR COMO LEÍDOS AL ENTRAR EN UN CHAT
+  useEffect(() => {
+    if (selectedChat?.type === 'private') {
+      setUnreadCounts(prev => {
+        const next = { ...prev };
+        delete next[selectedChat.id];
+        return next;
+      });
+      markAsRead(selectedChat.id);
+    }
+  }, [selectedChat]);
+
+  const markAsRead = async (senderId: string) => {
+    await supabase
+      .from('chat_messages')
+      .update({ is_read: true })
+      .eq('sender_id', senderId)
+      .eq('receiver_id', currentUser.id)
+      .eq('is_read', false);
+  };
 
   // CARGA INICIAL DE MENSAJES
   useEffect(() => {
@@ -114,7 +185,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
 
     setNewMessage('');
 
-    // Optimistic UI: Insertar temporalmente
     const tempId = `temp-${Date.now()}`;
     const now = new Date().toISOString();
     const optimisticMsg = {
@@ -134,7 +204,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
           .insert([{ sender_id: currentUser.id, receiver_id: selectedChat.id, content: content }])
           .select().single();
         if (error) throw error;
-        // Reemplazar el temporal con el real
         if (data) setMessages(prev => prev.map(m => m.id === tempId ? data : m));
       } else {
         const { data, error } = await supabase
@@ -146,7 +215,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
       }
     } catch (err) {
       console.error("Error enviando mensaje:", err);
-      // Quitar de la UI si falló
       setMessages(prev => prev.filter(m => m.id !== tempId));
     }
   };
@@ -192,29 +260,40 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
             </div>
           </button>
 
-          <div className="h-[px] bg-slate-100 mx-4 mb-4" />
+          <div className="h-[1px] bg-slate-100 mx-4 mb-4" />
 
-          {chatPartners.map(user => (
-            <button
-              key={user.id}
-              onClick={() => setSelectedChat({ type: 'private', id: user.id, name: user.name })}
-              className={`w-full flex items-center gap-4 p-4 rounded-2xl transition-all text-left ${
-                selectedChat?.type === 'private' && selectedChat.id === user.id 
-                  ? 'bg-white shadow-lg shadow-indigo-100 border border-indigo-100' 
-                  : 'hover:bg-white/60 border border-transparent'
-              }`}
-            >
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-sm ${
-                selectedChat?.type === 'private' && selectedChat.id === user.id ? 'bg-[#5851FF] text-white' : 'bg-slate-200 text-slate-500'
-              }`}>
-                {user.name.charAt(0).toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-black text-slate-700 truncate">{user.name}</div>
-                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">@{user.username}</div>
-              </div>
-            </button>
-          ))}
+          {chatPartners.map(user => {
+            const hasUnread = (unreadCounts[user.id] || 0) > 0;
+            return (
+              <button
+                key={user.id}
+                onClick={() => setSelectedChat({ type: 'private', id: user.id, name: user.name })}
+                className={`w-full flex items-center gap-4 p-4 rounded-2xl transition-all text-left relative ${
+                  selectedChat?.type === 'private' && selectedChat.id === user.id 
+                    ? 'bg-white shadow-lg shadow-indigo-100 border border-indigo-100' 
+                    : 'hover:bg-white/60 border border-transparent'
+                }`}
+              >
+                <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-sm relative ${
+                  selectedChat?.type === 'private' && selectedChat.id === user.id ? 'bg-[#5851FF] text-white' : 'bg-slate-200 text-slate-500'
+                }`}>
+                  {user.name.charAt(0).toUpperCase()}
+                  {hasUnread && (
+                    <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-rose-500 text-white text-[9px] font-black flex items-center justify-center rounded-full border-2 border-white animate-bounce shadow-sm">
+                      {unreadCounts[user.id]}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-black text-slate-700 truncate">{user.name}</div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">@{user.username}</div>
+                </div>
+                {hasUnread && (
+                  <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
