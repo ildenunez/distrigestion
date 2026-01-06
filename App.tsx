@@ -125,6 +125,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser) return;
 
+    // Notificaciones mensajes privados
     const chatChannel = supabase
       .channel('global_chat_notifs')
       .on(
@@ -132,6 +133,7 @@ const App: React.FC = () => {
         { event: 'INSERT', schema: 'public', table: 'chat_messages' },
         (payload) => {
           const newMsg = payload.new as ChatMessage;
+          // Solo si soy el destinatario y NO estoy actualmente viendo ese chat (opcional, por ahora siempre avisa)
           if (newMsg.receiver_id === currentUser.id) {
             const sender = users.find(u => u.id === newMsg.sender_id);
             setNotification({
@@ -140,12 +142,13 @@ const App: React.FC = () => {
               sender: sender ? sender.name : 'Compañero',
               isGroup: false
             });
-            setTimeout(() => setNotification(null), 6000);
+            setTimeout(() => setNotification(null), 5000);
           }
         }
       )
       .subscribe();
 
+    // Notificaciones mensajes grupales
     const groupChannel = supabase
       .channel('global_group_notifs')
       .on(
@@ -153,6 +156,7 @@ const App: React.FC = () => {
         { event: 'INSERT', schema: 'public', table: 'group_messages' },
         (payload) => {
           const newMsg = payload.new as GroupMessage;
+          // Si no lo envié yo
           if (newMsg.sender_id !== currentUser.id) {
             const sender = users.find(u => u.id === newMsg.sender_id);
             setNotification({
@@ -161,7 +165,7 @@ const App: React.FC = () => {
               sender: sender ? sender.name : 'Alguien',
               isGroup: true
             });
-            setTimeout(() => setNotification(null), 6000);
+            setTimeout(() => setNotification(null), 5000);
           }
         }
       )
@@ -628,7 +632,7 @@ const App: React.FC = () => {
       {/* Popups de Notificación Mejorados para Chat */}
       {notification && (
         <div className={`fixed bottom-10 right-8 px-8 py-5 rounded-[2rem] shadow-2xl border flex flex-col gap-1 animate-slideIn z-[100] max-w-sm ${
-          notification.type === 'error' ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-900 border-slate-800 text-white'
+          notification.type === 'error' ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-900 border-slate-800 text-white shadow-indigo-200'
         }`}>
           {notification.type === 'chat' ? (
             <>
@@ -648,7 +652,7 @@ const App: React.FC = () => {
                 onClick={() => { setActiveTab('chat'); setNotification(null); }}
                 className="mt-3 text-[10px] font-black uppercase tracking-widest text-indigo-400 hover:text-white transition-colors flex items-center gap-1"
               >
-                Ver Conversación
+                Responder ahora
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M9 5l7 7-7 7" /></svg>
               </button>
             </>

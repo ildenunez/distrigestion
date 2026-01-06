@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
-import { AppUser, ChatMessage, GroupMessage } from '../types';
+import { supabase } from '../lib/supabase.ts';
+import { AppUser, ChatMessage, GroupMessage } from '../types.ts';
 
 interface ChatInterfaceProps {
   currentUser: AppUser;
@@ -25,42 +25,49 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
     return users.filter(u => u.id !== currentUser.id);
   }, [users, currentUser]);
 
-  // Suscripción en tiempo real
+  // Suscripción en tiempo real unificada
   useEffect(() => {
-    const chatChannel = supabase
-      .channel('chat_realtime_private')
-      .on(
+    if (!selectedChat) return;
+
+    const channelName = `chat_${selectedChat.type}_${selectedChat.id}`;
+    const channel = supabase.channel(channelName);
+
+    if (selectedChat.type === 'private') {
+      channel.on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'chat_messages' },
         (payload) => {
           const newMsg = payload.new as ChatMessage;
-          if (selectedChat?.type === 'private' && (
+          // Validar si el mensaje pertenece a la conversación actual
+          const isRelated = 
             (newMsg.sender_id === currentUser.id && newMsg.receiver_id === selectedChat.id) ||
-            (newMsg.sender_id === selectedChat.id && newMsg.receiver_id === currentUser.id)
-          )) {
-            setMessages(prev => [...prev, newMsg]);
+            (newMsg.sender_id === selectedChat.id && newMsg.receiver_id === currentUser.id);
+
+          if (isRelated) {
+            setMessages(prev => {
+              // Evitar duplicados si el Optimistic UI ya lo insertó
+              if (prev.some(m => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
+            });
           }
         }
-      )
-      .subscribe();
-
-    const groupChannel = supabase
-      .channel('chat_realtime_group')
-      .on(
+      ).subscribe();
+    } else {
+      channel.on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'group_messages' },
         (payload) => {
           const newMsg = payload.new as GroupMessage;
-          if (selectedChat?.type === 'group') {
-            setMessages(prev => [...prev, newMsg]);
-          }
+          setMessages(prev => {
+            if (prev.some(m => m.id === newMsg.id)) return prev;
+            return [...prev, newMsg];
+          });
         }
-      )
-      .subscribe();
+      ).subscribe();
+    }
 
     return () => {
-      supabase.removeChannel(chatChannel);
-      supabase.removeChannel(groupChannel);
+      supabase.removeChannel(channel);
     };
   }, [currentUser, selectedChat]);
 
@@ -109,27 +116,68 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentUser, users }) => 
     const content = newMessage.trim();
     setNewMessage('');
 
+    // --- Optimistic UI ---
+    // Creamos un ID temporal para mostrar el mensaje de inmediato
+    const tempId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    
+    const optimisticMessage = selectedChat.type === 'private' 
+      ? ({ 
+          id: tempId, 
+          sender_id: currentUser.id, 
+          receiver_id: selectedChat.id, 
+          content, 
+          is_read: false, 
+          created_at: now 
+        } as ChatMessage)
+      : ({ 
+          id: tempId, 
+          sender_id: currentUser.id, 
+          content, 
+          created_at: now 
+        } as GroupMessage);
+
+    setMessages(prev => [...prev, optimisticMessage]);
+    // ---------------------
+
     try {
       if (selectedChat.type === 'private') {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from('chat_messages')
           .insert([{
             sender_id: currentUser.id,
             receiver_id: selectedChat.id,
             content: content
-          }]);
+          }])
+          .select()
+          .single();
+        
         if (error) throw error;
+        
+        // Reemplazar el mensaje optimista con el real de la BD para tener el ID correcto
+        if (data) {
+          setMessages(prev => prev.map(m => m.id === tempId ? data : m));
+        }
       } else {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from('group_messages')
           .insert([{
             sender_id: currentUser.id,
             content: content
-          }]);
+          }])
+          .select()
+          .single();
+        
         if (error) throw error;
+        
+        if (data) {
+          setMessages(prev => prev.map(m => m.id === tempId ? data : m));
+        }
       }
     } catch (err) {
       console.error("Error enviando mensaje:", err);
+      // Revertir el mensaje optimista en caso de error
+      setMessages(prev => prev.filter(m => m.id !== tempId));
     }
   };
 
