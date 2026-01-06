@@ -10,9 +10,9 @@ interface RecentEditsViewProps {
 const RecentEditsView: React.FC<RecentEditsViewProps> = ({ orders, onSelectOrder }) => {
   const recentOrders = useMemo(() => {
     return [...orders]
-      .filter(o => !!o.updatedAt)
+      .filter(o => !!o.updatedAt && !!o.updatedBy) // Solo mostramos los que tienen un editor asignado (cambios manuales)
       .sort((a, b) => new Date(b.updatedAt!).getTime() - new Date(a.updatedAt!).getTime())
-      .slice(0, 15);
+      .slice(0, 20);
   }, [orders]);
 
   const getStatusStyle = (status: OrderStatus) => {
@@ -47,7 +47,7 @@ const RecentEditsView: React.FC<RecentEditsViewProps> = ({ orders, onSelectOrder
           </div>
           Registro de Cambios Manuales
         </h2>
-        <p className="text-slate-500 mt-2 font-bold italic text-sm">Mostrando los pedidos que has modificado manualmente tras la importación.</p>
+        <p className="text-slate-500 mt-2 font-bold italic text-sm">Listado de pedidos modificados manualmente tras la última importación masiva.</p>
       </div>
 
       {recentOrders.length === 0 ? (
@@ -56,7 +56,7 @@ const RecentEditsView: React.FC<RecentEditsViewProps> = ({ orders, onSelectOrder
             <svg className="w-10 h-10 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           </div>
           <p className="text-slate-400 font-black uppercase tracking-widest text-[11px]">No se han registrado ediciones manuales todavía</p>
-          <p className="text-slate-300 text-xs mt-1 font-bold">Los pedidos recién importados no aparecen aquí hasta que los edites.</p>
+          <p className="text-slate-300 text-xs mt-1 font-bold">Los pedidos recién importados no aparecen aquí hasta que alguien los modifique.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -64,19 +64,19 @@ const RecentEditsView: React.FC<RecentEditsViewProps> = ({ orders, onSelectOrder
             <div 
               key={order.id}
               onClick={() => onSelectOrder(order)}
-              className="bg-white border border-slate-200 rounded-2xl p-6 hover:shadow-2xl hover:border-indigo-200 transition-all cursor-pointer group hover:-translate-y-1"
+              className="bg-white border border-slate-200 rounded-2xl p-6 hover:shadow-2xl hover:border-indigo-200 transition-all cursor-pointer group hover:-translate-y-1 flex flex-col h-full"
             >
               <div className="flex justify-between items-start mb-5">
-                <div>
+                <div className="min-w-0 flex-1">
                   <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest leading-none">{order.id}</span>
                   <h3 className="text-sm font-black text-slate-800 truncate uppercase mt-1 leading-tight">{order.city}</h3>
                 </div>
-                <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-tighter ${getStatusStyle(order.status)}`}>
+                <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-tighter shrink-0 ml-2 ${getStatusStyle(order.status)}`}>
                   {order.status}
                 </span>
               </div>
               
-              <div className="space-y-2 mb-6">
+              <div className="space-y-2 mb-6 flex-1">
                 <p className="text-[11px] text-slate-500 line-clamp-2 italic leading-relaxed">{order.address}</p>
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-black text-slate-400 uppercase">Pte. Cobro</span>
@@ -86,7 +86,20 @@ const RecentEditsView: React.FC<RecentEditsViewProps> = ({ orders, onSelectOrder
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-slate-50 flex items-center justify-between">
+              {/* Sección del Editor */}
+              <div className="mb-4 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 bg-white border border-slate-200 rounded-lg flex items-center justify-center text-[10px] font-black text-indigo-600">
+                    {order.updatedBy?.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <span className="block text-[8px] font-black uppercase text-slate-400 tracking-widest leading-none mb-0.5">Editado por:</span>
+                    <span className="block text-[10px] font-black text-slate-700 leading-none uppercase">{order.updatedBy}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-50 flex items-center justify-between mt-auto">
                 <div className="flex items-center gap-1.5 text-slate-400">
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                   <span className="text-[10px] font-black uppercase">{formatRelativeTime(order.updatedAt)}</span>

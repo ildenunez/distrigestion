@@ -44,6 +44,13 @@ export interface Truck {
   phone?: string;
 }
 
+export interface Store {
+  id: string;
+  name: string;
+  code: string;
+  created_at?: string;
+}
+
 export interface Order {
   id: string;               
   status: OrderStatus;      
@@ -58,7 +65,9 @@ export interface Order {
   phone1: string;           
   phone2: string;           
   truckId?: string;
-  updatedAt?: string;       
+  store?: string;
+  updatedAt?: string;
+  updatedBy?: string;       
 }
 
 export interface OrderStats {

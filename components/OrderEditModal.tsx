@@ -1,17 +1,18 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Order, OrderStatus, Truck } from '../types';
+import { Order, OrderStatus, Truck, Store } from '../types';
 import { getProvinceFromZip } from '../utils/provinceHelper';
 
 interface OrderEditModalProps {
   order: Order | null;
   trucks: Truck[];
+  stores: Store[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (updatedOrder: Order) => void;
 }
 
-const OrderEditModal: React.FC<OrderEditModalProps> = ({ order, trucks, isOpen, onClose, onSave }) => {
+const OrderEditModal: React.FC<OrderEditModalProps> = ({ order, trucks, stores, isOpen, onClose, onSave }) => {
   const [formData, setFormData] = useState<Order | null>(null);
 
   useEffect(() => {
@@ -91,7 +92,20 @@ const OrderEditModal: React.FC<OrderEditModalProps> = ({ order, trucks, isOpen, 
               </select>
             </div>
 
-            <div className="md:col-span-2 space-y-1.5">
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-black uppercase text-slate-400 tracking-wider">Tienda</label>
+              <select
+                name="store"
+                value={formData.store || ""}
+                onChange={handleChange}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 outline-none transition-all"
+              >
+                <option value="">Sin Tienda Definida</option>
+                {stores.map(s => <option key={s.id} value={s.code}>{s.name}</option>)}
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
               <label className="text-[11px] font-black uppercase text-slate-400 tracking-wider">Camión Asignado</label>
               <select
                 name="truckId"

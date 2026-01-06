@@ -1,15 +1,16 @@
 
 import React from 'react';
-import { Order, OrderStatus } from '../types';
+import { Order, OrderStatus, Store } from '../types';
 
 interface OrderTableProps {
   orders: Order[];
+  stores: Store[];
   onUpdateStatus: (id: string, newStatus: OrderStatus) => void;
   onDeleteOrder: (id: string) => void;
   onSelectOrder: (order: Order) => void;
 }
 
-const OrderTable: React.FC<OrderTableProps> = ({ orders, onUpdateStatus, onDeleteOrder, onSelectOrder }) => {
+const OrderTable: React.FC<OrderTableProps> = ({ orders, stores, onUpdateStatus, onDeleteOrder, onSelectOrder }) => {
   const getStatusStyle = (status: OrderStatus) => {
     switch (status) {
       case OrderStatus.UNREVIEWED: return "bg-slate-50 text-slate-500 border-slate-200";
@@ -30,6 +31,13 @@ const OrderTable: React.FC<OrderTableProps> = ({ orders, onUpdateStatus, onDelet
     return dateStr;
   };
 
+  const getStoreDisplayName = (codeOrName: string) => {
+    if (!codeOrName) return '---';
+    // Buscamos si el dato del pedido coincide con algún código manual de tienda
+    const store = stores.find(s => s.code === codeOrName || s.name === codeOrName);
+    return store ? store.name : codeOrName;
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
       <div className="overflow-x-auto">
@@ -37,6 +45,7 @@ const OrderTable: React.FC<OrderTableProps> = ({ orders, onUpdateStatus, onDelet
           <thead>
             <tr className="bg-slate-50/50 border-b border-slate-100">
               <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest min-w-[120px]">Pedido</th>
+              <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest min-w-[150px]">Tienda</th>
               <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest min-w-[200px]">Dirección Completa</th>
               <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest min-w-[250px]">Notas</th>
               <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-widest text-center">Provincia</th>
@@ -48,7 +57,7 @@ const OrderTable: React.FC<OrderTableProps> = ({ orders, onUpdateStatus, onDelet
           <tbody className="divide-y divide-slate-100">
             {orders.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-6 py-16 text-center text-slate-400 italic">
+                <td colSpan={8} className="px-6 py-16 text-center text-slate-400 italic">
                   No hay pedidos que coincidan con los filtros.
                 </td>
               </tr>
@@ -65,6 +74,12 @@ const OrderTable: React.FC<OrderTableProps> = ({ orders, onUpdateStatus, onDelet
                     </div>
                     <div className="text-[12px] text-slate-400 font-medium mt-0.5">
                       {formatDate(order.serviceDate)}
+                    </div>
+                  </td>
+
+                  <td className="px-6 py-5 align-top">
+                    <div className="text-[11px] font-black text-slate-800 uppercase bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200 inline-block tracking-tight">
+                      {getStoreDisplayName(order.store || '')}
                     </div>
                   </td>
 

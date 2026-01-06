@@ -41,7 +41,8 @@ export const parseCSV = (text: string): Order[] => {
       address: cols[34] || '',
       notes: cols[33] || '',
       phone1: cols[36] || '',
-      phone2: cols[37] || ''
+      phone2: cols[37] || '',
+      store: cols[1] || '' // Columna 2: Tienda
     };
 
     orders.push(order);
@@ -65,6 +66,7 @@ const mapStatus = (val: string = ''): OrderStatus => {
 export const generateSampleCSV = (): string => {
   const headers = Array(40).fill(0).map((_, i) => `COL${i+1}`).join(',');
   const row1 = Array(40).fill("");
+  row1[1] = "TIENDA MADRID";   // Columna 2: Tienda
   row1[3] = "25092535";      
   row1[4] = "Cliente Avisa"; 
   row1[7] = "01/12/2025";   
@@ -77,6 +79,7 @@ export const generateSampleCSV = (): string => {
   row1[36] = "600000001";
 
   const row2 = [...row1];
+  row2[1] = "TIENDA BARCELONA";
   row2[3] = "26000223";
   row2[4] = "RTC";
   row2[17] = "500,00";
